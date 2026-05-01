@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Checkpoints / training artifacts
+experiments/*/checkpoints/
+experiments/*/logs/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Keep experiment configs and results
+!experiments/**/*.yaml
+!experiments/**/*.json
+!experiments/**/*_results.md
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Isaac Sim / Omnidrones
+_isaac_sim/
+omniverse/
+.kit/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# wandb / mlflow
+wandb/
+mlruns/
+.neptune/
+
+# Large data
+*.bag
+*.rosbag
+*.h5
+*.hdf5

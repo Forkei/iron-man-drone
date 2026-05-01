@@ -1,0 +1,104 @@
+# M1 Baseline — SimpleFlight reproduction
+# Frozen before training. Do not edit mid-run.
+# Source: SimpleFlight (Chen et al., RAL 2025), Table VI
+
+experiment:
+  name: m1_baseline
+  seed: 42
+  total_epochs: 15000
+  eval_every: 500
+  checkpoint_every: 1000
+  log_every: 10
+
+env:
+  num_envs: 128            # start here, increase if VRAM allows
+  sim_freq: 100            # Hz
+  control_freq: 100        # Hz — CTBR runs at same rate as sim
+  episode_len: 1000        # steps (10 seconds at 100 Hz)
+
+  # Domain randomization — M1: only thrust coefficient
+  dr:
+    thrust_coeff_range: [0.7, 1.3]  # k_f ± 30%
+    # mass, inertia: NOT randomized in M1 (use SysID Crazyflie 2.1 values)
+
+  # Crazyflie 2.1 nominal parameters
+  # Source: SimpleFlight defaults + Crazyflie published values
+  quadrotor:
+    mass: 0.027          # kg
+    arm_length: 0.046    # m
+    ixx: 1.657e-5        # kg·m²
+    iyy: 1.657e-5        # kg·m²
+    izz: 2.9e-5          # kg·m²
+    motor_tau: 0.033     # s — motor time constant (~30ms)
+    kf_nominal: 3.16e-10 # thrust coefficient (N/(rad/s)²)
+
+observation:
+  # Actor: [e^W (30), v (3), R (9)] = 42-dim
+  lookahead_points: 10       # next N reference trajectory points
+  lookahead_dt: 0.05         # 50 ms between points → 0.5 s total lookahead
+  use_rotation_matrix: true  # NEVER quaternion — ~63% perf drop
+  use_prev_action: false     # NEVER include — causes non-stationarity
+
+  actor_dim: 42   # 30 + 3 + 9
+  critic_dim: 43  # actor_dim + 1 (timestep k)
+
+action:
+  # CTBR: collective thrust + body rates
+  space: ctbr
+  dim: 4  # [omega_x, omega_y, omega_z, c]
+
+network:
+  hidden_dim: 256
+  num_layers: 3
+  activation: elu
+  use_layer_norm: true
+  log_std_init: 0.0
+  log_std_min: -5.0
+  log_std_max: 2.0
+
+reward:
+  lambda_smooth: 0.4  # weight on smoothness reward
+  # r_total = r_task + lambda_smooth * r_smooth
+  # r_task  = normalized trajectory tracking (L2 distance → [0,1])
+  # r_smooth = exp(-||u_t - u_{t-1}||²), normalized to [0,1]
+
+  # Explicitly excluded (per SimpleFlight ablation):
+  # - action magnitude penalty (||u_t||² alone)
+  # - jerk/snap penalties
+  # - action clipping
+  # - low-pass filter on policy output
+
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  actor_lr: 3.0e-4
+  critic_lr: 1.0e-4   # lower than actor — CRITICAL, separate optimizer
+  critic_updates: 16  # critic update iterations per PPO step
+  entropy_coeff: 1.0e-3
+  max_grad_norm: 0.5
+  horizon: 32         # rollout steps per env before update
+  minibatch_size: 256
+
+training:
+  trajectory_mix:
+    smooth_polynomial: 0.5   # 50% smooth polynomial trajectories
+    infeasible_zigzag: 0.5   # 50% infeasible zigzag trajectories
+    # figure-eight and pentagram are HELD OUT (OOD test cases)
+
+  sanity_check:
+    # Run this before epoch 1. Abort if entropy > 10% of total reward.
+    check_entropy_ratio: true
+    entropy_ratio_threshold: 0.1
+
+eval:
+  trajectories:
+    - figure_eight_slow
+    - figure_eight_normal
+    - figure_eight_fast
+    - random_polynomial
+    - pentagram_slow
+    - pentagram_fast
+    - random_zigzag
+  metric: med_xy     # Mean Euclidean Distance (x-y plane)
+  target_med: 0.056  # 2× paper's 0.028m on figure-eight normal
