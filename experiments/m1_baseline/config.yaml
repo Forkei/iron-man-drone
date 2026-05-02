@@ -38,14 +38,15 @@ env:
   max_tilt_deg: 60         # degrees — pitch/roll limit
 
 observation:
-  # Actor:  [e^W (30), v (3), R (9), ω (3)] = 45-dim
-  # Critic: [actor_obs (45), k (1)] = 46-dim
+  # Actor:  [e^W (30), v (3), R (9)] = 42-dim  (paper Section III-B, no body rates)
+  # Critic: [actor_obs (42), k (1)] = 43-dim
   lookahead_points: 10     # next N reference trajectory points
   lookahead_dt_ms: 50      # 50 ms between points = 5 steps at 100 Hz
   use_rotation_matrix: true
   use_prev_action: false   # NEVER include — causes non-stationarity
-  actor_dim: 45
-  critic_dim: 46
+  use_body_rates: false    # NOT in paper — extra dims on small policy can hurt
+  actor_dim: 42
+  critic_dim: 43
 
 action:
   space: ctbr              # collective thrust + body rates

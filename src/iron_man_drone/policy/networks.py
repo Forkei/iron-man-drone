@@ -26,12 +26,14 @@ def _mlp_layers(hidden_dim: int, num_layers: int) -> list:
 
 class Actor(nn.Module):
     """
-    Input:  actor_obs (45-dim): [e^W (30), v (3), R (9), ω (3)]
+    Input:  actor_obs (42-dim): [e^W (30), v (3), R (9)]
     Output: mean and log_std for 4-dim CTBR Gaussian
 
+    Matches SimpleFlight paper Section III-B exactly.
     CRITICAL invariants:
+    - Does NOT receive body rates ω (not in paper obs)
     - Does NOT receive previous action u_{t-1}
-    - Does NOT receive timestep k
+    - Does NOT receive timestep k (critic only)
     - Uses rotation matrix R (9-dim), never quaternion
     """
     hidden_dim: int = 256
@@ -86,8 +88,8 @@ class Critic(nn.Module):
 
 def init_networks(
     key: jnp.ndarray,
-    actor_obs_dim: int = 45,
-    critic_obs_dim: int = 46,
+    actor_obs_dim: int = 42,
+    critic_obs_dim: int = 43,
     hidden_dim: int = 256,
     num_layers: int = 3,
 ):

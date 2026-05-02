@@ -4,15 +4,17 @@ MuJoCo MJX quadrotor environment — SimpleFlight recipe (M1).
 Parallel envs via jax.vmap over (state, action) with a shared mjx_model.
 All functions are pure JAX — jit-compilable, vmappable.
 
-Observation:
-  Actor  (45-dim): [e^W (30), v (3), R (9), ω (3)]
-  Critic (46-dim): [e^W (30), v (3), R (9), ω (3), k (1)]
+Observation (matching SimpleFlight paper Section III-B exactly):
+  Actor  (42-dim): [e^W (30), v (3), R (9)]
+  Critic (43-dim): [e^W (30), v (3), R (9), k (1)]
   where:
     e^W  = relative positions to next 10 reference points in world frame
     v    = linear velocity (world frame)
     R    = rotation matrix, flattened (body → world)
-    ω    = body rates (body frame)
-    k    = normalized timestep (0 → 1 over episode)
+    k    = normalized timestep (0 → 1 over episode)  [CRITIC ONLY]
+
+Body rates ω are NOT in the actor obs — paper Section III-B defines
+o_t = [e^W_t, v_t, R_t] ∈ ℝ^42 with no ω term.
 
 Action (4-dim, Gaussian policy):
   [ω_x^d, ω_y^d, ω_z^d, c]  (raw, unbounded — squashed in CTBR controller)
@@ -58,8 +60,8 @@ MAX_HEIGHT_ABOVE_REF = 5.0   # m — bounding box radius
 MIN_HEIGHT = 0.05             # m — ground crash threshold
 MAX_TILT_RAD = jnp.pi / 3.0  # 60° — max pitch/roll before episode ends
 
-ACTOR_OBS_DIM = 45   # 30 + 3 + 9 + 3
-CRITIC_OBS_DIM = 46  # 45 + 1
+ACTOR_OBS_DIM = 42   # 30 + 3 + 9  (paper Section III-B: no body rates)
+CRITIC_OBS_DIM = 43  # 42 + 1
 
 
 # ── State type ────────────────────────────────────────────────────────────────
@@ -92,7 +94,12 @@ def _build_obs(
     step: jnp.ndarray,
     drone_body_id: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Build actor obs (45-dim) and critic obs (46-dim)."""
+    """
+    Build actor obs (42-dim) and critic obs (43-dim).
+    Matches SimpleFlight paper Section III-B exactly:
+      actor  = [e^W (30), v (3), R (9)]
+      critic = [e^W (30), v (3), R (9), k (1)]
+    """
     # Position in world frame
     pos = mjx_data.xpos[drone_body_id]           # (3,)
 
@@ -102,9 +109,6 @@ def _build_obs(
     # Linear velocity (world frame) — qvel[:3] for free joint
     v = mjx_data.qvel[:3]                        # (3,)
 
-    # Body rates (body frame) — qvel[3:6] for free joint
-    omega = mjx_data.qvel[3:6]                   # (3,)
-
     # Relative positions to next 10 reference points in world frame
     ref_window = get_reference_window(           # (10, 3)
         traj, step,
@@ -113,11 +117,11 @@ def _build_obs(
     )
     e_W = (ref_window - pos[None, :]).reshape(-1)  # (30,)
 
-    # Normalized timestep (for critic)
+    # Normalized timestep (for critic ONLY — causes OOD failures if in actor)
     k = step.astype(jnp.float32) / EPISODE_STEPS  # scalar in [0, 1]
 
-    actor_obs = jnp.concatenate([e_W, v, R, omega])  # (45,)
-    critic_obs = jnp.concatenate([actor_obs, jnp.array([k])])  # (46,)
+    actor_obs = jnp.concatenate([e_W, v, R])                    # (42,)
+    critic_obs = jnp.concatenate([actor_obs, jnp.array([k])])   # (43,)
 
     return actor_obs, critic_obs
 

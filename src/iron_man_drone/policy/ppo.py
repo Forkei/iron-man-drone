@@ -43,8 +43,8 @@ class PPOConfig:
     ppo_epochs: int = 5              # passes over each rollout buffer
     horizon: int = 32                # steps per env per rollout
     num_envs: int = 1024
-    actor_obs_dim: int = 45
-    critic_obs_dim: int = 46
+    actor_obs_dim: int = 42   # paper Section III-B: [e^W(30), v(3), R(9)]
+    critic_obs_dim: int = 43  # actor + k(1)
     action_dim: int = 4
     hidden_dim: int = 256
     num_layers: int = 3
