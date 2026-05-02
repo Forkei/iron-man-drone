@@ -219,24 +219,30 @@ try:
     total_env_steps = NUM_ENVS * BENCH_STEPS
     steps_per_sec = total_env_steps / elapsed
 
-    TARGET = 50_000
-    ok = check(
-        f"throughput >= {TARGET:,} steps/sec",
-        steps_per_sec >= TARGET,
-        f"{steps_per_sec:,.0f} env-steps/sec  ({NUM_ENVS} envs × {BENCH_STEPS} steps in {elapsed:.2f}s)",
-    )
+    # Three-tier threshold — only < 5k is a hard stop (truly broken GPU path).
+    # 50k is the target; 5k-50k is slow but training will complete.
+    BROKEN  =  5_000   # sys.exit — something is not on GPU
+    TARGET  = 50_000   # PASS
 
-    if not ok:
+    detail = f"{steps_per_sec:,.0f} env-steps/sec  ({NUM_ENVS} envs × {BENCH_STEPS} steps in {elapsed:.2f}s)"
+    if steps_per_sec >= TARGET:
+        check("throughput >= 50k steps/sec (target)", True, detail)
+    elif steps_per_sec >= BROKEN:
+        # Warn but don't exit — training is slow but viable
+        eta_warn = (NUM_ENVS * 32 * 15_000) / steps_per_sec / 3600
+        print(f"  [{WARN}] throughput {steps_per_sec:,.0f} steps/sec — below 50k target, but training viable (~{eta_warn:.0f}h)")
+        print(f"         {detail}")
+        if steps_per_sec < 20_000:
+            print("  CHECK: below 20k. Verify jax.lax.scan is used in ppo.py rollout, not a Python for-loop.")
+    else:
+        check(f"throughput >= {BROKEN:,} steps/sec (minimum)", False, detail)
         print()
-        if steps_per_sec > 10_000:
-            print(f"  {WARN} Below target but > 10k. Training will work, just slower.")
-            print("  Check: is jax.lax.scan used in ppo.py rollout? (not a Python for-loop)")
-        else:
-            print("  FIX: < 10k steps/sec indicates something is not GPU-accelerated.")
-            print("  Check:")
-            print("    1. JAX is using CUDA device (check [1/4] above)")
-            print("    2. No Python-level loop inside the vmapped step")
-            print("    3. xfrc_applied shape is (num_envs, nbody, 6) — correct batching")
+        print("  FIX: < 5k steps/sec means the simulation is not running on GPU.")
+        print("  Debug in order:")
+        print("    1. Confirm gate [1/4] showed a CUDA device, not CPU")
+        print("    2. Run: python -c \"import jax; print(jax.default_backend())\"  → must print 'gpu'")
+        print("    3. Check that vmap'd mjx.step is inside jax.jit (no Python loop wrapping it)")
+        sys.exit(1)
 
     # Estimate training time
     steps_per_epoch = NUM_ENVS * 32  # horizon=32
