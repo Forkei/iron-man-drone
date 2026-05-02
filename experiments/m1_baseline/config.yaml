@@ -1,6 +1,6 @@
-# M1 Baseline — SimpleFlight reproduction
+# M1 Baseline — SimpleFlight recipe on MuJoCo MJX
 # Frozen before training. Do not edit mid-run.
-# Source: SimpleFlight (Chen et al., RAL 2025), Table VI
+# Sources: SimpleFlight (Chen et al., RAL 2025) Table VI + M1 spec v2.
 
 experiment:
   name: m1_baseline
@@ -11,94 +11,101 @@ experiment:
   log_every: 10
 
 env:
-  num_envs: 128            # start here, increase if VRAM allows
+  num_envs: 1024           # start here; reduce to 512 if OOM on 4070
   sim_freq: 100            # Hz
-  control_freq: 100        # Hz — CTBR runs at same rate as sim
-  episode_len: 1000        # steps (10 seconds at 100 Hz)
+  episode_len: 1000        # steps (10 seconds)
 
-  # Domain randomization — M1: only thrust coefficient
+  # Domain randomization — M1: ONLY thrust coefficient
   dr:
-    thrust_coeff_range: [0.7, 1.3]  # k_f ± 30%
-    # mass, inertia: NOT randomized in M1 (use SysID Crazyflie 2.1 values)
+    thrust_coeff_range: [0.7, 1.3]   # k_f ± 30%
+    # mass, inertia: NOT randomized (use SysID Crazyflie 2.1 values exactly)
 
-  # Crazyflie 2.1 nominal parameters
-  # Source: SimpleFlight defaults + Crazyflie published values
+  # Crazyflie 2.1 physical parameters (from SimpleFlight paper)
   quadrotor:
-    mass: 0.027          # kg
-    arm_length: 0.046    # m
-    ixx: 1.657e-5        # kg·m²
-    iyy: 1.657e-5        # kg·m²
-    izz: 2.9e-5          # kg·m²
-    motor_tau: 0.033     # s — motor time constant (~30ms)
-    kf_nominal: 3.16e-10 # thrust coefficient (N/(rad/s)²)
+    mass: 0.0321           # kg
+    ixx: 1.4e-5            # kg·m²
+    iyy: 1.4e-5
+    izz: 2.17e-5
+    kf: 2.350347298350041e-08   # thrust coefficient [N/(rad/s)²]
+    km: 7.24e-10                # moment coefficient [N·m/(rad/s)²]
+    arm_length: 0.046           # center-to-rotor [m]
+    max_rotor_speed: 2315       # [rad/s]
+    motor_tau: 0.025            # motor time constant [s]
+
+  # Termination
+  min_height: 0.05         # m — ground crash
+  max_bbox_dist: 5.0       # m — bounding box from reference
+  max_tilt_deg: 60         # degrees — pitch/roll limit
 
 observation:
-  # Actor: [e^W (30), v (3), R (9)] = 42-dim
-  lookahead_points: 10       # next N reference trajectory points
-  lookahead_dt: 0.05         # 50 ms between points → 0.5 s total lookahead
-  use_rotation_matrix: true  # NEVER quaternion — ~63% perf drop
-  use_prev_action: false     # NEVER include — causes non-stationarity
-
-  actor_dim: 42   # 30 + 3 + 9
-  critic_dim: 43  # actor_dim + 1 (timestep k)
+  # Actor:  [e^W (30), v (3), R (9), ω (3)] = 45-dim
+  # Critic: [actor_obs (45), k (1)] = 46-dim
+  lookahead_points: 10     # next N reference trajectory points
+  lookahead_dt_ms: 50      # 50 ms between points = 5 steps at 100 Hz
+  use_rotation_matrix: true
+  use_prev_action: false   # NEVER include — causes non-stationarity
+  actor_dim: 45
+  critic_dim: 46
 
 action:
-  # CTBR: collective thrust + body rates
-  space: ctbr
-  dim: 4  # [omega_x, omega_y, omega_z, c]
+  space: ctbr              # collective thrust + body rates
+  dim: 4                   # [ω_x^d, ω_y^d, ω_z^d, c]
+  # Ranges (applied in ctbr_controller.py):
+  #   body rates: ±π rad/s per axis
+  #   collective thrust c: [0,1] → [0, 1.6 * m * g]
 
 network:
   hidden_dim: 256
   num_layers: 3
   activation: elu
   use_layer_norm: true
-  log_std_init: 0.0
-  log_std_min: -5.0
-  log_std_max: 2.0
 
 reward:
-  lambda_smooth: 0.4  # weight on smoothness reward
-  # r_total = r_task + lambda_smooth * r_smooth
-  # r_task  = normalized trajectory tracking (L2 distance → [0,1])
-  # r_smooth = exp(-||u_t - u_{t-1}||²), normalized to [0,1]
-
-  # Explicitly excluded (per SimpleFlight ablation):
-  # - action magnitude penalty (||u_t||² alone)
-  # - jerk/snap penalties
-  # - action clipping
-  # - low-pass filter on policy output
+  lambda_smooth: 0.4
+  # r_total = r_task + 0.4 * r_smooth
+  # r_task   = exp(-||pos - ref||²)    ∈ [0, 1]
+  # r_smooth = exp(-||u_t - u_{t-1}||²) ∈ [0, 1]
 
 ppo:
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
   actor_lr: 3.0e-4
-  critic_lr: 1.0e-4   # lower than actor — CRITICAL, separate optimizer
-  critic_updates: 16  # critic update iterations per PPO step
-  entropy_coeff: 1.0e-3
+  critic_lr: 1.0e-4        # SEPARATE optimizer, LOWER than actor — critical
+  critic_updates: 16       # critic gradient steps per PPO actor update
+  entropy_coeff: 1.0e-3    # must be << reward magnitude
   max_grad_norm: 0.5
-  horizon: 32         # rollout steps per env before update
-  minibatch_size: 256
+  value_loss_coeff: 0.5
+  num_minibatches: 8
+  ppo_epochs: 5
+  horizon: 32              # rollout steps per env before update
+  minibatch_size: 256      # kept for reference; actual = T*N/num_minibatches
 
 training:
   trajectory_mix:
-    smooth_polynomial: 0.5   # 50% smooth polynomial trajectories
-    infeasible_zigzag: 0.5   # 50% infeasible zigzag trajectories
-    # figure-eight and pentagram are HELD OUT (OOD test cases)
+    smooth_polynomial: 0.5    # 50% smooth polynomial
+    infeasible_zigzag: 0.5    # 50% infeasible zigzag
+    # Figure-eight and pentagram are HELD OUT (OOD test)
 
   sanity_check:
-    # Run this before epoch 1. Abort if entropy > 10% of total reward.
-    check_entropy_ratio: true
-    entropy_ratio_threshold: 0.1
+    # Run before first training step. Stop if entropy > 10% of reward.
+    entropy_ratio_threshold: 0.10
 
 eval:
   trajectories:
     - figure_eight_slow
     - figure_eight_normal
     - figure_eight_fast
-    - random_polynomial
     - pentagram_slow
     - pentagram_fast
+    - random_polynomial
     - random_zigzag
-  metric: med_xy     # Mean Euclidean Distance (x-y plane)
-  target_med: 0.056  # 2× paper's 0.028m on figure-eight normal
+  metric: med_xy
+  m1_target_med:
+    figure_eight_normal: 0.056   # 2× paper's 0.028
+    figure_eight_slow: 0.040
+    figure_eight_fast: 0.100
+    pentagram_slow: 0.060
+    pentagram_fast: 0.120
+    random_polynomial: 0.060
+    random_zigzag: 0.100

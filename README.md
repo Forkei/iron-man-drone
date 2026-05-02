@@ -1,59 +1,70 @@
 # Iron Man Drone
 
-Progressive RL drone project. Five milestones from SimpleFlight reproduction to GRaD-Nav++ language-commanded flight.
+Progressive RL drone project. Five milestones from SimpleFlight reproduction to GRaD-Nav++ language-commanded flight. Built on MuJoCo MJX + JAX.
 
 ## Milestones
 
 | # | Goal | Status |
 |---|---|---|
-| M1 | Reproduce SimpleFlight (Chen et al., RAL 2025) in Omnidrones | 🔄 In progress |
-| M2 | Fault tolerance via MAVEN-style DR | ⏳ Pending M1 |
+| M1 | SimpleFlight recipe on MuJoCo MJX | 🔄 In progress |
+| M2 | Fault tolerance (MAVEN-style DR) | ⏳ Pending M1 |
 | M3 | Visual obstacle avoidance | ⏳ Pending M2 |
 | M4 | 3DGS-SLAM mapping + landmark return | ⏳ Pending M3 |
-| M5 | GRaD-Nav++ replication — language commands | ⏳ Pending M4 |
+| M5 | GRaD-Nav++ — language commands | ⏳ Pending M4 |
 
-## M1 Quick Start
-
-See `scripts/setup_env.sh` for full WSL2 environment setup.
+## M1 Quick Start (WSL2)
 
 ```bash
-# 1. Clone Omnidrones
-git clone https://github.com/btx0424/OmniDrones simpleflight/OmniDrones
-cd simpleflight/OmniDrones && pip install -e .
+# 1. Setup environment (one-time)
+bash scripts/setup_env.sh
+conda activate drone
 
-# 2. Validate baseline checkpoints
-python scripts/eval_baseline.py --traj figure_eight_normal
+# 2. Verify GPU
+python -c "import jax; print(jax.devices())"
 
-# 3. Train
-python scripts/train_m1.py --config experiments/m1_baseline/config.yaml
+# 3. Read the gate doc
+cat notes/M1_hypothesis.md
+
+# 4. Train
+python scripts/train_m1.py
+
+# 5. Evaluate
+python scripts/eval_m1.py --checkpoint experiments/m1_baseline/RUN/checkpoints/final
 ```
 
 ## Repo layout
 
 ```
-simpleflight/       Omnidrones source + SimpleFlight assets
-experiments/        Training runs — each run is a timestamped subdirectory
-  m1_baseline/      First M1 run
-    config.yaml     Hyperparameters (frozen before run)
-    checkpoints/    .pt files (gitignored)
-    logs/           TensorBoard (gitignored)
-    M1_results.md   Written after run completes
-notes/              Hypothesis docs — written BEFORE training runs
-  M1_hypothesis.md  M1 training hypothesis (gating artifact)
-scripts/            Reproducible run/eval scripts
-  setup_env.sh      WSL2 environment setup
-  train_m1.py       M1 training entry point
-  eval_baseline.py  Evaluate SimpleFlight published checkpoints
+src/iron_man_drone/
+  envs/
+    crazyflie.xml          MuJoCo MJCF (dynamics only, forces applied programmatically)
+    quadrotor_env.py       MJX env: parallel envs via jax.vmap
+    trajectories.py        Figure-eight, pentagram, polynomial, zigzag
+  control/
+    ctbr_controller.py     CTBR → motors (rate PD + allocation mixer + first-order lag)
+  policy/
+    networks.py            Flax Actor (45-dim) + Critic (46-dim), 3×256 ELU+LN
+    ppo.py                 PPO: jax.lax.scan rollout, separate actor/critic TrainStates
+  utils/
+    domain_randomization.py  k_f ± 30% per episode
+experiments/m1_baseline/
+  config.yaml              Frozen hyperparameters (SimpleFlight Table VI)
+notes/
+  M1_hypothesis.md         Gating artifact — must exist before training
+scripts/
+  setup_env.sh             WSL2 environment setup
+  train_m1.py              Training entry point (gates on hypothesis doc)
+  eval_m1.py               Evaluation vs paper Table III targets
 ```
 
 ## Non-negotiable constraints
 
 - CTBR action space (body rates + collective thrust)
 - Rotation matrix in obs, never quaternion
-- Separate actor/critic networks + separate optimizers
+- Separate actor/critic Flax modules + separate Optax optimizers
 - Previous action NOT in actor observation
-- Time vector ONLY in critic
-- Entropy coefficient << reward (< 10% of reward at init)
+- Time step k ONLY in critic obs
+- Entropy << reward at init (< 10%)
 - No fine-tuning new capabilities onto converged policies
 
 ## Papers

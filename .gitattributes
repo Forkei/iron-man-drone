@@ -1,0 +1,8 @@
+# Shell scripts must keep LF line endings — they run in WSL2 Linux
+*.sh text eol=lf
+*.py text eol=lf
+
+# Config and docs can use native endings
+*.yaml text
+*.md text
+*.txt text

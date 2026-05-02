@@ -1,156 +1,154 @@
 #!/usr/bin/env bash
 # M1 environment setup — WSL2 Ubuntu 22.04 / 24.04
-# Uses SimpleFlight's exact stack: Isaac Sim 2022.2.0 + Python 3.7
+# Stack: Python 3.10 + JAX (CUDA 12) + MuJoCo MJX
 #
+# Much simpler than Isaac Sim — no Omniverse Launcher needed.
 # Prerequisites:
-#   1. WSL2 with Ubuntu 22.04 or 24.04 installed
-#   2. NVIDIA driver >= 525 installed on Windows (WSL2 CUDA passthrough)
-#   3. NVIDIA Omniverse Launcher downloaded and available in WSL
+#   1. WSL2 with Ubuntu 22.04 or 24.04
+#   2. NVIDIA driver >= 525 on Windows (provides CUDA passthrough to WSL2)
+#      Do NOT apt install nvidia-driver in WSL2 — the Windows driver handles it.
 #
-# Run this script once. It is idempotent.
 # Usage: bash scripts/setup_env.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SIMPLEFLIGHT_DIR="${REPO_ROOT}/simpleflight"
-ISAAC_SIM_VERSION="2022.2.0"
-ISAAC_SIM_PATH="${HOME}/.local/share/ov/pkg/isaac_sim-${ISAAC_SIM_VERSION}"
 
-echo "=== Iron Man Drone — M1 Environment Setup ==="
+echo "=== Iron Man Drone — M1 Environment Setup (MJX stack) ==="
 echo "Repo root: ${REPO_ROOT}"
 echo ""
 
-# ── Step 1: Verify WSL2 CUDA is visible ──────────────────────────────────────
-echo "[1/8] Checking NVIDIA GPU visibility in WSL2..."
-if ! command -v nvidia-smi &>/dev/null; then
+# ── Step 1: Verify NVIDIA GPU is visible in WSL2 ──────────────────────────────
+echo "[1/6] Checking NVIDIA GPU visibility..."
+if ! nvidia-smi &>/dev/null; then
     echo "ERROR: nvidia-smi not found."
-    echo "  On Windows: make sure your NVIDIA driver is >= 525."
-    echo "  In WSL2: nvidia-smi should work via driver passthrough."
+    echo ""
+    echo "WSL2 CUDA setup:"
+    echo "  1. Update Windows NVIDIA driver to >= 525 (https://www.nvidia.com/drivers)"
+    echo "  2. nvidia-smi should then work inside WSL2 automatically."
+    echo "  3. Do NOT run 'apt install nvidia-driver' inside WSL2."
     echo "  See: https://docs.nvidia.com/cuda/wsl-user-guide/"
     exit 1
 fi
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 echo ""
 
-# ── Step 2: Install system dependencies ───────────────────────────────────────
-echo "[2/8] Installing system packages..."
+# ── Step 2: System dependencies ───────────────────────────────────────────────
+echo "[2/6] Installing system packages..."
 sudo apt-get update -qq
-sudo apt-get install -y \
-    wget curl git git-lfs build-essential \
+sudo apt-get install -y wget curl git build-essential \
     libgl1-mesa-glx libglib2.0-0 \
-    libx11-6 libxext6 libxrender1 \
-    python3-pip
+    python3-pip python3-venv
+echo ""
 
-# ── Step 3: Install Miniconda if absent ───────────────────────────────────────
-echo "[3/8] Checking Conda..."
+# ── Step 3: Conda ─────────────────────────────────────────────────────────────
+echo "[3/6] Checking Conda..."
 if ! command -v conda &>/dev/null; then
     echo "Installing Miniconda..."
     wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
     bash /tmp/miniconda.sh -b -p "${HOME}/miniconda3"
     rm /tmp/miniconda.sh
-    echo 'export PATH="${HOME}/miniconda3/bin:${PATH}"' >> "${HOME}/.bashrc"
-    export PATH="${HOME}/miniconda3/bin:${PATH}"
+    eval "$("${HOME}/miniconda3/bin/conda" shell.bash hook)"
+    conda init bash
 fi
 conda --version
 echo ""
 
-# ── Step 4: Isaac Sim 2022.2.0 ────────────────────────────────────────────────
-echo "[4/8] Checking Isaac Sim 2022.2.0..."
-if [ ! -d "${ISAAC_SIM_PATH}" ]; then
-    echo ""
-    echo "ACTION REQUIRED: Isaac Sim 2022.2.0 must be installed manually."
-    echo ""
-    echo "  1. Install NVIDIA Omniverse Launcher from:"
-    echo "     https://www.nvidia.com/en-us/omniverse/download/"
-    echo "     (Download the Linux version, run in WSL2)"
-    echo ""
-    echo "  2. From the Launcher: Exchange → Apps → Isaac Sim"
-    echo "     Select version: 2022.2.0"
-    echo "     Install to default path: ~/.local/share/ov/pkg/"
-    echo ""
-    echo "  3. Re-run this script after installation."
-    echo ""
-    echo "  NOTE: Isaac Sim 2022.2.0 is ~10GB download."
-    echo "  Alternative: Install via Nucleus if you have an NGC account."
-    echo ""
-    echo "After Isaac Sim is installed, expected path:"
-    echo "  ${ISAAC_SIM_PATH}"
-    echo ""
-    echo "Script paused. Re-run after Isaac Sim install."
-    exit 0
+# ── Step 4: Create conda environment ─────────────────────────────────────────
+echo "[4/6] Creating conda environment 'drone' (Python 3.10)..."
+if ! conda env list | grep -q "^drone "; then
+    conda create -n drone python=3.10 -y
 fi
 
-echo "Isaac Sim found at: ${ISAAC_SIM_PATH}"
-echo 'export ISAACSIM_PATH="${HOME}/.local/share/ov/pkg/isaac_sim-2022.2.0"' >> "${HOME}/.bashrc" 2>/dev/null || true
-export ISAACSIM_PATH="${ISAAC_SIM_PATH}"
-echo ""
+# ── Step 5: Install Python packages ──────────────────────────────────────────
+echo "[5/6] Installing Python packages..."
+conda run -n drone bash -c "
+    set -e
+    cd ${REPO_ROOT}
 
-# ── Step 5: Clone SimpleFlight ────────────────────────────────────────────────
-echo "[5/8] Cloning SimpleFlight (thu-uav/SimpleFlight)..."
-if [ ! -d "${SIMPLEFLIGHT_DIR}/SimpleFlight/.git" ]; then
-    git clone https://github.com/thu-uav/SimpleFlight.git "${SIMPLEFLIGHT_DIR}/SimpleFlight"
-    git -C "${SIMPLEFLIGHT_DIR}/SimpleFlight" submodule update --init --recursive
-else
-    echo "Already cloned, skipping."
-fi
-echo ""
+    # JAX with CUDA 12 (must come before other JAX-dependent packages)
+    pip install --upgrade 'jax[cuda12]' --quiet
 
-# ── Step 6: Create conda environment (Python 3.7 — required by Isaac Sim 2022) ──
-echo "[6/8] Creating conda environment 'sim' (Python 3.7)..."
-if ! conda env list | grep -q "^sim "; then
-    conda create -n sim python=3.7 -y
-fi
+    # Verify JAX can see the GPU
+    python -c \"
+import jax
+devices = jax.devices()
+print(f'JAX devices: {devices}')
+assert any('cuda' in str(d).lower() or 'gpu' in str(d).lower() for d in devices), \
+    'No GPU detected by JAX. Check CUDA driver setup.'
+print('JAX GPU: OK')
+\"
 
-# Copy Isaac Sim conda hooks (sets up PATH, LD_LIBRARY_PATH on activate)
-CONDA_PREFIX=$(conda run -n sim python -c "import sys; print(sys.prefix)")
-cp -r "${SIMPLEFLIGHT_DIR}/SimpleFlight/conda_setup/etc" "${CONDA_PREFIX}/"
-echo "Conda activation hooks installed."
-echo ""
+    # MuJoCo with MJX (bundled since 3.0)
+    pip install 'mujoco>=3.1.6' --quiet
 
-# ── Step 7: Install SimpleFlight + pinned deps ────────────────────────────────
-echo "[7/8] Installing Python packages in 'sim' environment..."
-conda run -n sim bash -c "
-    cd ${SIMPLEFLIGHT_DIR}/SimpleFlight
+    # Flax + Optax + Distrax
+    pip install 'flax>=0.8.0' 'optax>=0.2.2' 'distrax>=0.1.5' --quiet
 
-    # Install SimpleFlight package
+    # Orbax for checkpointing
+    pip install 'orbax-checkpoint>=0.4.0' --quiet
+
+    # Config + logging
+    pip install 'hydra-core>=1.3.2' 'wandb>=0.16.0' 'tensorboard>=2.15.0' --quiet
+    pip install 'matplotlib>=3.8.0' 'tqdm>=4.66.0' 'pyyaml>=6.0' --quiet
+
+    # Install the iron_man_drone package
     pip install -e . --quiet
 
-    # Pinned submodule versions (exact paper reproduction)
-    cd third_party/tensordict
-    git checkout 5e6205c
-    pip install -e . --no-build-isolation --quiet
-
-    cd ../torchrl
-    git checkout e39e701
-    pip install -e . --no-build-isolation --quiet
-
-    cd ../..
-
-    # Additional monitoring tools
-    pip install tensorboard wandb --quiet
+    echo 'All packages installed.'
 "
 echo ""
 
-# ── Step 8: Sanity check ──────────────────────────────────────────────────────
-echo "[8/8] Running sanity checks..."
-conda run -n sim python -c "
+# ── Step 6: Sanity checks ─────────────────────────────────────────────────────
+echo "[6/6] Running sanity checks..."
+conda run -n drone python -c "
 import sys
-print(f'Python: {sys.version}')
-import torch
-print(f'PyTorch: {torch.__version__}')
-print(f'CUDA available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU: {torch.cuda.get_device_name(0)}')
-    print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
+print(f'Python: {sys.version.split()[0]}')
+
+import jax
+import jax.numpy as jnp
+print(f'JAX: {jax.__version__}')
+print(f'Devices: {jax.devices()}')
+
+import mujoco
+from mujoco import mjx
+print(f'MuJoCo: {mujoco.__version__}')
+
+import flax, optax, distrax
+print(f'Flax: {flax.__version__}  Optax: {optax.__version__}')
+
+# Test MJX vmap
+import numpy as np
+xml = '''
+<mujoco>
+  <option timestep=\"0.01\"/>
+  <worldbody>
+    <body>
+      <freejoint/>
+      <inertial mass=\"1\" pos=\"0 0 0\" diaginertia=\"1 1 1\"/>
+      <geom type=\"sphere\" size=\"0.1\"/>
+    </body>
+  </worldbody>
+</mujoco>
+'''
+model = mujoco.MjModel.from_xml_string(xml)
+mx = mjx.put_model(model)
+dx = mjx.make_data(mx)
+
+# Vmap over a batch of 4 envs
+batch_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
+batch_dx = jax.tree_util.tree_map(lambda x: jnp.stack([x]*4), dx)
+out = batch_step(mx, batch_dx)
+print(f'MJX vmap test: {out.qpos.shape} [expected (4, 7)]')
+assert out.qpos.shape == (4, 7), f'Unexpected shape: {out.qpos.shape}'
+print('MJX GPU-parallel: OK')
+print()
+print('All checks passed. Run: conda activate drone && python scripts/train_m1.py')
 "
 
 echo ""
 echo "=== Setup complete ==="
 echo ""
-echo "Next steps:"
-echo "  1. conda activate sim"
-echo "  2. Run baseline eval:  bash scripts/run_eval_baseline.sh"
-echo "  3. Run training:       bash scripts/run_train_m1.sh"
-echo ""
-echo "See notes/M1_hypothesis.md before starting any training run."
+echo "Activate environment: conda activate drone"
+echo "Read gate doc:        cat notes/M1_hypothesis.md"
+echo "Start training:       python scripts/train_m1.py"
