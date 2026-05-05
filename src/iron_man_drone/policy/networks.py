@@ -1,11 +1,15 @@
 """
-SimpleFlight actor-critic networks in Flax.
+Actor-critic networks in Flax — M2 (RMA fault-tolerant variant).
 
 Architecture: 3-layer MLP, hidden=256, ELU + LayerNorm, asymmetric.
-  Actor:  obs (42-dim) → Gaussian over CTBR (4-dim)
-  Critic: obs (43-dim) → scalar value
+  Actor:  obs (50-dim) → Gaussian over CTBR (4-dim)
+  Critic: obs (51-dim) → scalar value
 
-Reference: Chen et al., RAL 2025, Section III-B.
+M2 obs layout:
+  Actor  (50): [e^W(30), v(3), R(9), z(8)]     z = priv_state in Phase 1
+  Critic (51): [e^W(30), v(3), R(9), e_t(8), k(1)]
+
+Reference: Chen et al. SimpleFlight RAL 2025; Kumar et al. RMA arXiv 2107.04034.
 """
 
 from __future__ import annotations
@@ -26,12 +30,13 @@ def _mlp_layers(hidden_dim: int, num_layers: int) -> list:
 
 class Actor(nn.Module):
     """
-    Input:  actor_obs (42-dim): [e^W (30), v (3), R (9)]
+    Input:  actor_obs (50-dim): [e^W (30), v (3), R (9), z (8)]
     Output: mean and log_std for 4-dim CTBR Gaussian
 
-    Matches SimpleFlight paper Section III-B exactly.
-    CRITICAL invariants:
-    - Does NOT receive body rates ω (not in paper obs)
+    M2: z is the 8-dim privileged latent. In Phase 1 it is e_t passed directly.
+    In Phase 1 with encoder (next commit): z = μ(e_t). At deployment: z = ϕ(history).
+    CRITICAL invariants (unchanged from M1):
+    - Does NOT receive body rates ω
     - Does NOT receive previous action u_{t-1}
     - Does NOT receive timestep k (critic only)
     - Uses rotation matrix R (9-dim), never quaternion
@@ -67,11 +72,12 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     """
-    Input:  critic_obs (43-dim): actor_obs (42) + timestep k (1)
+    Input:  critic_obs (51-dim): [e^W(30), v(3), R(9), e_t(8), k(1)]
     Output: scalar state value
 
-    Asymmetric — receives privileged timestep k that actor does NOT see.
-    Putting k in actor causes OOD failures on long-horizon flights.
+    Asymmetric: critic receives raw privileged state e_t (ground truth physical
+    params) for better value estimation. Actor gets z = μ(e_t) (learned latent).
+    k (timestep) stays in critic only — OOD failure if put in actor.
     """
     hidden_dim: int = 256
     num_layers: int = 3
@@ -88,8 +94,8 @@ class Critic(nn.Module):
 
 def init_networks(
     key: jnp.ndarray,
-    actor_obs_dim: int = 42,
-    critic_obs_dim: int = 43,
+    actor_obs_dim: int = 50,
+    critic_obs_dim: int = 51,
     hidden_dim: int = 256,
     num_layers: int = 3,
 ):

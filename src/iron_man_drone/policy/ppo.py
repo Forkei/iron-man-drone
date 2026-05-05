@@ -43,8 +43,8 @@ class PPOConfig:
     ppo_epochs: int = 5              # passes over each rollout buffer
     horizon: int = 32                # steps per env per rollout
     num_envs: int = 1024
-    actor_obs_dim: int = 42   # paper Section III-B: [e^W(30), v(3), R(9)]
-    critic_obs_dim: int = 43  # actor + k(1)
+    actor_obs_dim: int = 50   # M2: [e^W(30), v(3), R(9), z(8)]
+    critic_obs_dim: int = 51  # M2: actor_base(42) + e_t(8) + k(1)
     action_dim: int = 4
     hidden_dim: int = 256
     num_layers: int = 3
@@ -222,40 +222,39 @@ def collect_rollout(
     env_states,               # batched EnvState
     actor_obs: jnp.ndarray,   # (num_envs, actor_obs_dim)
     critic_obs: jnp.ndarray,  # (num_envs, critic_obs_dim)
-    kf_multipliers: jnp.ndarray,  # (num_envs,)
-    env_step_fn,              # vmapped env step
-    env_reset_fn,             # vmapped env reset
+    env_step_fn,              # vmapped env step: (states, actions) -> ...
+    env_reset_fn,             # vmapped env reset: (keys,) -> ...
     key: jnp.ndarray,
     cfg: PPOConfig,
 ):
     """
     Collect cfg.horizon steps of experience using jax.lax.scan.
+
+    M2: no kf_multipliers arg — all DR params live in EnvState and are
+    re-sampled automatically when reset() is called on episode end.
+
     Returns (transitions, final_states, final_actor_obs, final_critic_obs).
     """
     def _env_step(carry, _):
-        states, a_obs, c_obs, kf_mults, key = carry
+        states, a_obs, c_obs, key = carry
 
-        # Sample action from actor
         key, act_key, reset_key = jax.random.split(key, 3)
         mean, log_std = actor_state.apply_fn(actor_state.params, a_obs)
         dist = distrax.MultivariateNormalDiag(mean, jnp.exp(log_std))
         actions = dist.sample(seed=act_key)
         log_probs = dist.log_prob(actions)
 
-        # Critic value
         values = critic_state.apply_fn(critic_state.params, c_obs)
 
-        # Env step
+        # Step — DR read from state (no external arg)
         new_states, new_a_obs, new_c_obs, rewards, dones = env_step_fn(
-            states, actions, kf_mults
+            states, actions
         )
 
-        # Auto-reset done environments
+        # Auto-reset: fresh DR params sampled from reset_key per env
         reset_keys = jax.random.split(reset_key, cfg.num_envs)
-        reset_states, reset_a_obs, reset_c_obs = env_reset_fn(reset_keys, kf_mults)
+        reset_states, reset_a_obs, reset_c_obs = env_reset_fn(reset_keys)
 
-        # Where done, replace with reset state.
-        # dones is (num_envs,); each array may be 1D..4D — reshape mask to broadcast.
         def _where_done(n, r):
             mask = dones.reshape((dones.shape[0],) + (1,) * (n.ndim - 1))
             return jnp.where(mask, r, n)
@@ -273,11 +272,11 @@ def collect_rollout(
             value=values,
             done=dones,
         )
-        return (new_states, new_a_obs, new_c_obs, kf_mults, key), transition
+        return (new_states, new_a_obs, new_c_obs, key), transition
 
-    (final_states, final_a_obs, final_c_obs, _, _), transitions = jax.lax.scan(
+    (final_states, final_a_obs, final_c_obs, _), transitions = jax.lax.scan(
         _env_step,
-        (env_states, actor_obs, critic_obs, kf_multipliers, key),
+        (env_states, actor_obs, critic_obs, key),
         None,
         length=cfg.horizon,
     )

@@ -1,0 +1,99 @@
+# M2 Phase 1 — RMA fault-tolerant policy training
+# DR ranges from MAVEN paper (arXiv 2603.10714), two-phase scheme from RMA (arXiv 2107.04034).
+# See notes/M2_spec.md for full architecture and success criteria.
+
+experiment:
+  name: m2_phase1_baseline
+  seed: 42
+  total_epochs: 15000
+  eval_every: 500
+  checkpoint_every: 1000
+  log_every: 10
+
+env:
+  num_envs: 1024
+  sim_freq: 100
+  episode_len: 1000
+
+  # M2 domain randomization
+  dr:
+    # kf (global thrust coeff): ±30%, same as M1
+    thrust_coeff_range: [0.7, 1.3]
+    # Per-rotor efficiency: MAVEN convention — single rotor, prob 0.7
+    fault_prob: 0.7
+    eta_min: 0.5          # degraded rotor efficiency lower bound
+    # Mass variation: ±20%
+    mass_range: [0.8, 1.2]
+    # Wind: excluded from Phase 1 training (OOD eval only)
+    wind: false
+
+  quadrotor:
+    mass: 0.0321
+    ixx: 1.4e-5
+    iyy: 1.4e-5
+    izz: 2.17e-5
+    kf: 2.350347298350041e-08
+    km: 7.24e-10
+    arm_length: 0.046
+    max_rotor_speed: 2315
+    motor_tau: 0.025
+
+  min_height: 0.05
+  max_bbox_dist: 5.0
+  max_tilt_deg: 60
+
+observation:
+  # M2: actor 50-dim (adds 8-dim priv_state slot), critic 51-dim
+  actor_dim: 50
+  critic_dim: 51
+  lookahead_points: 10
+  lookahead_dt_ms: 50
+  use_rotation_matrix: true
+  use_prev_action: false
+  use_body_rates: false
+
+action:
+  space: ctbr
+  dim: 4
+
+network:
+  hidden_dim: 256
+  num_layers: 3
+  activation: elu
+  use_layer_norm: true
+
+reward:
+  lambda_smooth: 0.4
+
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  actor_lr: 3.0e-4
+  critic_lr: 1.0e-4
+  critic_updates: 16
+  entropy_coeff: 1.0e-3
+  max_grad_norm: 0.5
+  value_loss_coeff: 0.5
+  num_minibatches: 8
+  ppo_epochs: 5
+  horizon: 32
+
+training:
+  trajectory_mix:
+    smooth_polynomial: 0.5
+    infeasible_zigzag: 0.5
+
+  sanity_check:
+    entropy_ratio_threshold: 0.10
+
+eval:
+  # M2 go/no-go criteria (from M2_spec.md):
+  #   Nominal: figure_eight_normal MED <= 0.037m (M1.3 level — hard requirement)
+  #   Single rotor eta=0.70: MED <= 0.060m
+  #   Single rotor eta=0.50: MED <= 0.100m
+  #   Mass +-20%: MED <= 1.5x nominal
+  m2_targets:
+    figure_eight_normal_nominal: 0.037
+    figure_eight_normal_eta70: 0.060
+    figure_eight_normal_eta50: 0.100
