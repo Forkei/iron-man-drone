@@ -49,13 +49,13 @@ scripts/
 
 ## Observation dimensions
 
-- **Actor obs**: 45-dim = [e^W (30), v (3), R (9), ω (3)]
-- **Critic obs**: 46-dim = [actor_obs (45), k (1)]
+- **Actor obs**: 42-dim = [e^W (30), v (3), R (9)]
+- **Critic obs**: 43-dim = [actor_obs (42), k (1)]
 - e^W = relative positions to next 10 ref points in world frame (50ms spacing)
 - v = linear velocity (world frame) from qvel[:3]
 - R = rotation matrix body→world, flattened, from xmat[drone_body_id]
-- ω = body rates from qvel[3:6]
 - k = normalized episode step in [0,1] (CRITIC ONLY)
+- ω (body rates) NOT in actor obs — paper Section III-B defines 42-dim with no ω term
 
 ## Dynamics constants (Crazyflie 2.1)
 

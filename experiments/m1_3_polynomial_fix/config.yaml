@@ -1,0 +1,109 @@
+# M1.3 — polynomial generator fix
+# Frozen before training. Do not edit mid-run.
+#
+# Changes from M1.1 (reward-fix-only baseline):
+#   - Polynomial generator: broken zero-curvature scalar Hermite → C2-continuous
+#     quintic polynomial (true 5th-degree poly in time, nonzero vel/acc at junctions)
+#   - num_envs: 1024 → 4096 (throughput)
+#   - total_epochs: 15000
+#   - checkpoint_every: 500 (more granular)
+#
+# entropy_coeff stays at 1e-3 — isolating the polynomial fix from entropy changes.
+# (M1.4 can layer entropy scheduling on top if M1.3 passes the threshold.)
+#
+# See notes/M1_3_hypothesis.md for rationale and predictions.
+
+experiment:
+  name: m1_3_polynomial_fix
+  seed: 42
+  total_epochs: 15000
+  eval_every: 1000
+  checkpoint_every: 500
+  log_every: 10
+
+env:
+  num_envs: 4096
+  sim_freq: 100            # Hz
+  episode_len: 1000        # steps (10 seconds)
+
+  dr:
+    thrust_coeff_range: [0.7, 1.3]
+
+  quadrotor:
+    mass: 0.0321
+    ixx: 1.4e-5
+    iyy: 1.4e-5
+    izz: 2.17e-5
+    kf: 2.350347298350041e-08
+    km: 7.24e-10
+    arm_length: 0.046
+    max_rotor_speed: 2315
+    motor_tau: 0.025
+
+  min_height: 0.05
+  max_bbox_dist: 5.0
+  max_tilt_deg: 60
+
+observation:
+  lookahead_points: 10
+  lookahead_dt_ms: 50
+  use_rotation_matrix: true
+  use_prev_action: false
+  use_body_rates: false
+  actor_dim: 42
+  critic_dim: 43
+
+action:
+  space: ctbr
+  dim: 4
+
+network:
+  hidden_dim: 256
+  num_layers: 3
+  activation: elu
+  use_layer_norm: true
+
+reward:
+  lambda_smooth: 0.4
+
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  actor_lr: 3.0e-4
+  critic_lr: 1.0e-4
+  critic_updates: 16
+  entropy_coeff: 1.0e-3    # unchanged from M1.1 — isolating polynomial fix
+  max_grad_norm: 0.5
+  value_loss_coeff: 0.5
+  num_minibatches: 8
+  ppo_epochs: 5
+  horizon: 32
+  minibatch_size: 256
+
+training:
+  trajectory_mix:
+    smooth_polynomial: 0.5
+    infeasible_zigzag: 0.5
+
+  sanity_check:
+    entropy_ratio_threshold: 0.10
+
+eval:
+  trajectories:
+    - figure_eight_slow
+    - figure_eight_normal
+    - figure_eight_fast
+    - pentagram_slow
+    - pentagram_fast
+    - random_polynomial
+    - random_zigzag
+  metric: med_xy
+  m1_target_med:
+    figure_eight_normal: 0.056
+    figure_eight_slow: 0.040
+    figure_eight_fast: 0.100
+    pentagram_slow: 0.060
+    pentagram_fast: 0.120
+    random_polynomial: 0.060
+    random_zigzag: 0.100

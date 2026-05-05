@@ -22,7 +22,7 @@ def check(label, ok, detail=""):
 
 
 # ── 1. JAX CUDA device ────────────────────────────────────────────────────────
-print("\n[1/4] JAX device check")
+print("\n[1/6] JAX device check")
 try:
     import jax
     import jax.numpy as jnp
@@ -51,7 +51,7 @@ except ImportError as e:
 
 
 # ── 2. MuJoCo + MJX imports ───────────────────────────────────────────────────
-print("\n[2/4] MuJoCo + MJX imports")
+print("\n[2/6] MuJoCo + MJX imports")
 try:
     import mujoco
     check("mujoco imports", True, f"version {mujoco.__version__}")
@@ -70,7 +70,7 @@ except ImportError as e:
 
 
 # ── 3. Crazyflie XML loads, steps, no NaNs ────────────────────────────────────
-print("\n[3/4] Crazyflie model: load + step + NaN check")
+print("\n[3/6] Crazyflie model: load + step + NaN check")
 
 xml_path = Path(__file__).parent.parent / "src/iron_man_drone/envs/crazyflie.xml"
 check("crazyflie.xml exists", xml_path.exists(), str(xml_path))
@@ -145,11 +145,13 @@ try:
         print("  FIX: Unexpected DOF count. Verify crazyflie.xml has exactly one freejoint.")
         sys.exit(1)
 
-    # Check xmat exists and has right shape for rotation matrix
+    # Check xmat shape — MuJoCo >= 3.2 returns (3,3), older versions return (9,)
     xmat = mjx_data.xmat[drone_body_id]
-    check("xmat[drone] shape (9,)", xmat.shape == (9,), str(xmat.shape))
-    # The (2,5,8) elements are the z-column of the rotation matrix (body z in world frame)
-    body_z = jnp.array([xmat[2], xmat[5], xmat[8]])
+    is_matrix = xmat.shape == (3, 3)
+    is_flat   = xmat.shape == (9,)
+    check("xmat[drone] shape (3,3) or (9,)", is_matrix or is_flat, str(xmat.shape))
+    # body z-axis in world frame = column 2 of rotation matrix
+    body_z = xmat[:, 2] if is_matrix else jnp.array([xmat[2], xmat[5], xmat[8]])
     cos_tilt = float(body_z[2])
     check("rotation matrix looks valid", abs(cos_tilt) > 0.5,
           f"body z-axis world: {body_z.tolist()}, cos_tilt={cos_tilt:.3f}")
@@ -161,7 +163,7 @@ except Exception as e:
 
 
 # ── 4. Throughput at 1024 parallel envs ──────────────────────────────────────
-print("\n[4/4] Throughput benchmark: 1024 parallel envs")
+print("\n[4/6] Throughput benchmark: 1024 parallel envs")
 
 NUM_ENVS = 1024
 WARMUP_STEPS = 50

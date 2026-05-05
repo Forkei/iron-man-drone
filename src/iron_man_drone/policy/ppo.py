@@ -172,7 +172,8 @@ def ppo_update(
 
         def _minibatch(carry, mb_idx):
             actor_s, critic_s = carry
-            idx = perm[mb_idx * mb_size : (mb_idx + 1) * mb_size]
+            # mb_idx is a traced int inside lax.scan — must use dynamic slice
+            idx = jax.lax.dynamic_slice_in_dim(perm, mb_idx * mb_size, mb_size)
             mb_trans = jax.tree_util.tree_map(lambda x: x[idx], flat)
             mb_adv = flat_advantages[idx]
             mb_ret = flat_returns[idx]
@@ -253,12 +254,13 @@ def collect_rollout(
         reset_keys = jax.random.split(reset_key, cfg.num_envs)
         reset_states, reset_a_obs, reset_c_obs = env_reset_fn(reset_keys, kf_mults)
 
-        # Where done, replace with reset state
-        new_states = jax.tree_util.tree_map(
-            lambda n, r: jnp.where(dones[:, None] if n.ndim > 1 else dones, r, n),
-            new_states,
-            reset_states,
-        )
+        # Where done, replace with reset state.
+        # dones is (num_envs,); each array may be 1D..4D — reshape mask to broadcast.
+        def _where_done(n, r):
+            mask = dones.reshape((dones.shape[0],) + (1,) * (n.ndim - 1))
+            return jnp.where(mask, r, n)
+
+        new_states = jax.tree_util.tree_map(_where_done, new_states, reset_states)
         new_a_obs = jnp.where(dones[:, None], reset_a_obs, new_a_obs)
         new_c_obs = jnp.where(dones[:, None], reset_c_obs, new_c_obs)
 

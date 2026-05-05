@@ -2,8 +2,8 @@
 SimpleFlight actor-critic networks in Flax.
 
 Architecture: 3-layer MLP, hidden=256, ELU + LayerNorm, asymmetric.
-  Actor:  obs (45-dim) → Gaussian over CTBR (4-dim)
-  Critic: obs (46-dim) → scalar value
+  Actor:  obs (42-dim) → Gaussian over CTBR (4-dim)
+  Critic: obs (43-dim) → scalar value
 
 Reference: Chen et al., RAL 2025, Section III-B.
 """
@@ -67,7 +67,7 @@ class Actor(nn.Module):
 
 class Critic(nn.Module):
     """
-    Input:  critic_obs (46-dim): actor_obs + timestep k
+    Input:  critic_obs (43-dim): actor_obs (42) + timestep k (1)
     Output: scalar state value
 
     Asymmetric — receives privileged timestep k that actor does NOT see.

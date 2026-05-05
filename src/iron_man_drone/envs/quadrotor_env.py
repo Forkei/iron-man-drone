@@ -103,8 +103,9 @@ def _build_obs(
     # Position in world frame
     pos = mjx_data.xpos[drone_body_id]           # (3,)
 
-    # Rotation matrix body → world, flattened (9,)
-    R = mjx_data.xmat[drone_body_id]             # (9,)
+    # Rotation matrix body → world, flattened to (9,) for obs
+    # MuJoCo >= 3.2 returns (3,3); older versions return (9,) — reshape handles both
+    R = mjx_data.xmat[drone_body_id].reshape(-1)  # (9,)
 
     # Linear velocity (world frame) — qvel[:3] for free joint
     v = mjx_data.qvel[:3]                        # (3,)
@@ -171,10 +172,10 @@ def _check_done(
     bbox_exit = (horiz_dist > MAX_HEIGHT_ABOVE_REF) | (vert_dist > MAX_HEIGHT_ABOVE_REF)
 
     # Tilt check via z-axis of rotation matrix
-    # xmat[body_id] = [R00 R01 R02 R10 R11 R12 R20 R21 R22]
-    # Body z-axis in world frame = R[:, 2] = [R02, R12, R22] = entries [2, 5, 8]
-    R = mjx_data.xmat[drone_body_id]
-    body_z_world = jnp.array([R[2], R[5], R[8]])
+    # Body z-axis in world frame = column 2 of the rotation matrix.
+    # reshape(-1) handles both (3,3) [MuJoCo >= 3.2] and (9,) [older].
+    R_flat = mjx_data.xmat[drone_body_id].reshape(-1)
+    body_z_world = jnp.array([R_flat[2], R_flat[5], R_flat[8]])
     cos_tilt = body_z_world[2]  # dot with world z = [0,0,1]
     tilt_crash = cos_tilt < jnp.cos(MAX_TILT_RAD)
 
@@ -292,7 +293,7 @@ def make_step_fn(
 
         # 6. Reward
         pos = mjx_data.xpos[drone_body_id]
-        ref_pos = get_reference_pos(state.traj, state.step)
+        ref_pos = get_reference_pos(state.traj, new_step)
         reward, _ = _compute_reward(pos, ref_pos, action, state.prev_action)
 
         # 7. Termination
