@@ -252,3 +252,11 @@ scripts/
 - **MAVEN** — arXiv:2603.10714. Domain randomization ranges for rotor faults and mass variation.
 - **GRaD-Nav++** — Chen et al., RAL 2025. arXiv:2506.14009. Language-commanded flight; target for M5.
 - **PureJaxRL** — Lu et al., 2022. Fully-JIT-compiled PPO training pattern used throughout.
+
+---
+
+## Contact
+
+Olivier Couthaud — olivier.couthaud@gmail.com — [@olivier_couth](https://x.com/olivier_couth)
+
+If you work on agile drone RL, sim-to-real, 3DGS-SLAM, or vision-language robotics and want to compare notes, I'd like to hear from you.
