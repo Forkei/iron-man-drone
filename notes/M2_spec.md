@@ -131,9 +131,21 @@ Simple flat MLP. Chosen over RMA's 1D CNN for implementation simplicity in Flax/
 
 - Algorithm: PPO (identical to M1.3)
 - Duration: 15,000 epochs (same as M1.3; ~4–5 hours on 4070)
-- Gating checkpoint: evaluate at epoch 5,000 and 10,000. If nominal figure_eight_normal MED > 0.060m at epoch 5,000, stop and diagnose (see Failure Modes §F1).
+- Eval every 500 epochs (not 1000 — denser signal needed for M2's harder optimization)
 - Convergence signal: same as M1.3 — reward trending up, entropy slow-decreasing, MED dropping
 - Do NOT pause and resume (L1 from lessons.md). Run uninterrupted.
+
+**Abort gates (nominal figure_eight_normal MED):**
+
+| Epoch | Gate | Rationale |
+|-------|------|-----------|
+| 5,000 | MED > 0.130 m → stop | M1.3 clean run (1777900285) was 0.091 m at epoch 5k. 1.5× margin for DR variance = 0.137 m → 0.130 m gate (rounded down). If M2 exceeds this, nominal learning has diverged, not just slowed. |
+| 10,000 | MED > 0.115 m → stop | M1.3 clean run was 0.081 m at epoch 10k. 1.5× = 0.122 m → 0.115 m gate. At epoch 10k we expect nominal to be converging; 1.5× M1.3 is a generous ceiling. |
+| 5k→10k | Improvement < 0.010 m → stop | M1.3 improved 0.091 → 0.081 m (0.010 m) in this window. A policy that is flat over 5,000 epochs has stopped learning; further epochs will not help. Catches plateau failures that pass the absolute gate. |
+
+All gates are on **nominal** MED only (η=[1,1,1,1], kf=1.0, mass=1.0). Fault MED is too noisy to gate on early in DR training (70% of episodes are fault episodes; the nominal eval is a single rollout).
+
+The absolute gates do NOT require M2 to be ahead of M1.3 — they catch divergence (crash loops, encoder collapse, gradient failure). The trend gate catches plateaus. A policy tracking M1.3's actual curve passes all gates with margin.
 
 **First training run must validate nominal before trusting robustness numbers:**
 The very first eval of Phase 1 must include the nominal scenario (η = [1,1,1,1], m_scale = 1.0, F_wind = 0). If nominal MED regresses by > 20% vs M1.3, abort and diagnose before running fault-scenario evals.
@@ -217,7 +229,7 @@ Rationale: z augmentation should be additive. Under nominal conditions (η=[1,1,
 ## Failure Modes to Watch
 
 ### F1 — Nominal regression (most likely)
-**Symptom:** Phase 1 nominal MED > 0.050m at epoch 10,000 (worse than M1 baseline).  
+**Symptom:** Phase 1 nominal MED > 0.115 m at epoch 10,000 (abort gate fires).  
 **Cause candidates:** z = 0 collapse in μ (policy ignores z), z variance is too high (noisy signal confuses actor), DR so aggressive that most rollouts crash and gradient is degenerate.  
 **Diagnostic:** Check z variance across episodes. Plot crash rate per epoch. Compare reward curve slope to M1.3.  
 **Fix:** If z variance < 0.01: add a diversity penalty or check μ init. If crash rate > 20% in epoch 1-500: reduce fault probability from 0.70 to 0.30 for first 5k epochs.  

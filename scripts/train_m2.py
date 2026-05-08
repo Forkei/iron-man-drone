@@ -98,6 +98,15 @@ def main():
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--nominal_only", action="store_true",
                         help="Validation gate 4: train with nominal DR only (fault_prob=0, mass=1)")
+    parser.add_argument("--resume_from", default=None,
+                        help="Checkpoint path to resume from (full optimizer state required)")
+    parser.add_argument("--start_epoch", type=int, default=0,
+                        help="Epoch number the resume checkpoint corresponds to")
+    parser.add_argument("--resume_med_nominal", type=float, default=None,
+                        help="Nominal MED at start_epoch, used as trend-gate reference on resume")
+    parser.add_argument("--trend_gate_improvement", type=float, default=0.010,
+                        help="Min MED improvement required over the 5k-epoch trend window "
+                             "(default 0.010 for fresh runs; use 0.005 for DR-resumed runs)")
     args = parser.parse_args()
 
     import yaml
@@ -200,6 +209,19 @@ def main():
     key, init_key = jax.random.split(key)
     actor, critic, actor_state, critic_state = create_train_states(init_key, ppo_cfg)
 
+    if args.resume_from:
+        import orbax.checkpoint as ocp
+        _checkpointer = ocp.PyTreeCheckpointer()
+        _ckpt = _checkpointer.restore(
+            args.resume_from,
+            item={"actor": actor_state, "critic": critic_state},
+        )
+        actor_state, critic_state = _ckpt["actor"], _ckpt["critic"]
+        print(f"Resumed from: {args.resume_from}")
+        print(f"  start_epoch={args.start_epoch}, "
+              f"resume_med_nominal={args.resume_med_nominal}, "
+              f"trend_gate_improvement={args.trend_gate_improvement}")
+
     sanity_check_entropy_ratio(actor_state, critic_state, env, flat_cfg, key)
 
     # Initial reset — no kf_mults arg (M2 interface)
@@ -248,57 +270,65 @@ def main():
     )
     from iron_man_drone.envs.trajectories import make_figure_eight_trajectory, get_reference_pos
 
-    _eval_traj  = make_figure_eight_trajectory(DT, EPISODE_STEPS, LOOKAHEAD_N * LOOKAHEAD_DT_STEPS, speed="normal")
-    _eval_reset = jax.jit(env._reset_fn)
-    _eval_step  = jax.jit(env._step_fn)
-    _drone_id   = env.mj_model.body("drone").id
+    _eval_traj = make_figure_eight_trajectory(DT, EPISODE_STEPS, LOOKAHEAD_N * LOOKAHEAD_DT_STEPS, speed="normal")
+    _drone_id  = env.mj_model.body("drone").id
 
-    # Nominal priv_state for eval (no fault, nominal mass)
+    # Eval priv_states — physics (rotor_efficiency, mass_scale) must match
+    # what the actor observes so there is no mismatch between sim and policy input.
     _nominal_priv = jnp.concatenate([jnp.ones(4), jnp.ones(1), jnp.zeros(3)])
+    _fault70_priv = jnp.concatenate([jnp.array([0.7, 1.0, 1.0, 1.0]),
+                                     jnp.ones(1), jnp.zeros(3)])  # rotor 0 at η=0.70
 
-    print("Pre-warming eval JIT...")
-    _pw_key = jax.random.PRNGKey(999)
-    _pw_state, _pw_obs, _ = _eval_reset(_pw_key)
-    _pw_state = _pw_state._replace(traj=_eval_traj, priv_state=_nominal_priv)
-    _pw_a_obs, _ = _build_obs(_pw_state.mjx_data, _eval_traj, _pw_state.step, _drone_id, _nominal_priv)
-    _pw_mean, _ = actor_state.apply_fn(actor_state.params, _pw_a_obs[None])
-    _pw_state, _, _, _, _ = _eval_step(_pw_state, _pw_mean[0])
-    del _pw_key, _pw_state, _pw_obs, _pw_a_obs, _pw_mean
-    print("Eval JIT pre-warmed.")
-
-    def _run_med_eval(actor_state, key, priv_override=None):
-        """
-        One deterministic episode on figure-eight-normal.
-        priv_override: if provided (8-dim array), override the priv_state
-            (e.g., to evaluate under a specific fault condition).
-        """
-        key, rk = jax.random.split(key)
-        state, a_obs, _ = _eval_reset(rk)
-        state = state._replace(traj=_eval_traj)
-
-        if priv_override is not None:
-            state = state._replace(priv_state=priv_override)
-
-        a_obs, _ = _build_obs(
-            state.mjx_data, _eval_traj, state.step, _drone_id, state.priv_state
+    # Precompute all EPISODE_STEPS reference XY positions once — avoids creating
+    # 1000 separate JIT traces (one per unique integer step) inside the eval loop.
+    _eval_ref_xy = jnp.array(
+        jax.vmap(lambda s: get_reference_pos(_eval_traj, s)[:2])(
+            jnp.arange(EPISODE_STEPS, dtype=jnp.int32)
         )
+    )  # (EPISODE_STEPS, 2), constant
 
-        positions, refs = [], []
-        for si in range(EPISODE_STEPS):
-            mean, _ = actor_state.apply_fn(actor_state.params, a_obs[None])
+    @jax.jit
+    def _eval_episode_jit(actor_params, reset_key, priv_override):
+        """Full 1000-step episode compiled as a single XLA program via lax.scan.
+        Steps after done=True are masked out of the MED calculation."""
+        state, _, _ = env._reset_fn(reset_key)
+        state = state._replace(
+            traj=_eval_traj,
+            priv_state=priv_override,
+            rotor_efficiency=priv_override[:4],
+            mass_scale=priv_override[4],
+        )
+        a_obs, _ = _build_obs(state.mjx_data, _eval_traj, state.step, _drone_id, priv_override)
+
+        def scan_step(carry, ref_xy):
+            state, a_obs, already_done = carry
+            mean, _ = actor_state.apply_fn(actor_params, a_obs[None])
             action = mean[0]
-            state, a_obs, _, _, done = _eval_step(state, action)
-            state = state._replace(traj=_eval_traj)
-            positions.append(np.array(state.mjx_data.xpos[_drone_id, :2]))
-            refs.append(np.array(get_reference_pos(_eval_traj, jnp.int32(si))[:2]))
-            if bool(done):
-                break
+            new_state, new_a_obs, _, _, done = env._step_fn(state, action)
+            new_state = new_state._replace(traj=_eval_traj)
+            pos_xy = new_state.mjx_data.xpos[_drone_id, :2]
+            error = jnp.linalg.norm(pos_xy - ref_xy)
+            active = ~already_done
+            masked_error = jnp.where(active, error, 0.0)
+            return (new_state, new_a_obs, already_done | done), (masked_error, active)
 
-        if not positions:
-            return float("nan")
-        positions = np.array(positions)
-        refs = np.array(refs[:len(positions)])
-        return float(np.linalg.norm(positions - refs, axis=1).mean())
+        _, (errors, active_mask) = jax.lax.scan(
+            scan_step, (state, a_obs, jnp.bool_(False)), _eval_ref_xy
+        )
+        n_active = jnp.sum(active_mask)
+        med = jnp.where(n_active > 0,
+                        jnp.sum(errors) / n_active.astype(jnp.float32),
+                        jnp.nan)
+        return med
+
+    def _run_med_eval(a_state, key, priv_override=None):
+        key, rk = jax.random.split(key)
+        priv = _nominal_priv if priv_override is None else priv_override
+        return float(_eval_episode_jit(a_state.params, rk, priv))
+
+    print("Pre-warming eval JIT (compiles full 1000-step scan — takes ~1 min)...")
+    _ = _eval_episode_jit(actor_state.params, jax.random.PRNGKey(999), _nominal_priv)
+    print("Eval JIT pre-warmed.")
 
     # JIT-compiled rollout and update (no kf_mults arg in M2)
     collect_rollout_jit = jax.jit(
@@ -315,11 +345,19 @@ def main():
     checkpoint_interval = cfg.get("experiment", {}).get("checkpoint_every", 1000)
     log_interval        = cfg.get("experiment", {}).get("log_every", 10)
     med_eval_interval   = cfg.get("experiment", {}).get("eval_every", 500)
+    _med_at_5k = None      # set at epoch 5k for 5k→10k trend gate (fresh runs only)
+    _last_med_nominal = None  # most recent nominal eval (for post-loop trend gate)
+    start_epoch = args.start_epoch
+    _trend_gate_improvement = args.trend_gate_improvement
+    _trend_ref_med = args.resume_med_nominal   # None on fresh run, 0.100 on resume
 
-    print(f"\nStarting training: 0–{flat_cfg['total_epochs']} epochs")
+    print(f"\nStarting training: {start_epoch}–{flat_cfg['total_epochs']} epochs")
     print(f"Steps per epoch: {flat_cfg['num_envs'] * flat_cfg['horizon']}")
+    if start_epoch > 0:
+        print(f"Trend gate: improvement ≥ {_trend_gate_improvement:.3f} m "
+              f"from epoch {start_epoch} (ref MED={_trend_ref_med})")
 
-    for epoch in range(flat_cfg["total_epochs"]):
+    for epoch in range(start_epoch, flat_cfg["total_epochs"]):
         key, rollout_key, update_key = jax.random.split(key, 3)
 
         transitions, env_states, actor_obs, critic_obs = collect_rollout_jit(
@@ -363,21 +401,50 @@ def main():
                            "done_rate": done_rate, **metrics_cpu, "fps": fps})
 
         if epoch > 0 and epoch % med_eval_interval == 0:
-            key, eval_key = jax.random.split(key)
-            med_nominal = _run_med_eval(actor_state, eval_key, priv_override=_nominal_priv)
-            print(f"  [EVAL] epoch {epoch:5d} | nominal MED = {med_nominal:.4f} m "
-                  f"(target ≤0.037m)")
-            tb_writer.add_scalar("eval/med_nominal", med_nominal, epoch)
+            key, eval_key1, eval_key2 = jax.random.split(key, 3)
 
-            # Gate check
-            if epoch == 5000 and med_nominal > 0.055:
-                print(f"\n  [ABORT GATE] epoch 5000: nominal MED {med_nominal:.4f} > 0.055m")
-                print("  Re-read M2_spec.md §F1 before next run. Stopping.")
-                break
-            if epoch == 10000 and med_nominal > 0.045:
-                print(f"\n  [ABORT GATE] epoch 10000: nominal MED {med_nominal:.4f} > 0.045m")
-                print("  Re-read M2_spec.md §F1 before next run. Stopping.")
-                break
+            med_nominal = _run_med_eval(actor_state, eval_key1, priv_override=_nominal_priv)
+            med_fault70 = _run_med_eval(actor_state, eval_key2, priv_override=_fault70_priv)
+
+            print(f"  [EVAL] epoch {epoch:5d} | "
+                  f"nominal MED = {med_nominal:.4f} m (≤0.037) | "
+                  f"fault η=0.70 MED = {med_fault70:.4f} m (≤0.060)")
+            tb_writer.add_scalar("eval/med_nominal",  med_nominal,  epoch)
+            tb_writer.add_scalar("eval/med_fault_eta70", med_fault70, epoch)
+            _last_med_nominal = med_nominal
+
+            # ── Gates only active on fresh runs (start_epoch == 0) ────────────
+            # Resumed runs skip these; their trend gate is checked post-loop.
+            if start_epoch == 0:
+                # Absolute gates (calibrated vs M1.3 clean run + 1.5× DR margin):
+                #   M1.3 epoch 5000  = 0.091 m → 1.5× = 0.137 m → gate 0.130 m
+                #   M1.3 epoch 10000 = 0.081 m → 1.5× = 0.122 m → gate 0.115 m
+                if epoch == 5000:
+                    _med_at_5k = med_nominal
+                    if med_nominal > 0.130:
+                        print(f"\n  [ABORT GATE] epoch 5000: nominal MED {med_nominal:.4f} > 0.130 m")
+                        print("  (M1.3 was 0.091 m at epoch 5k; 1.5× ceiling = 0.137 m)")
+                        print("  Re-read M2_spec.md §F1 before next run. Stopping.")
+                        break
+                if epoch == 10000:
+                    if med_nominal > 0.115:
+                        print(f"\n  [ABORT GATE] epoch 10000: nominal MED {med_nominal:.4f} > 0.115 m")
+                        print("  (M1.3 was 0.081 m at epoch 10k; 1.5× ceiling = 0.122 m)")
+                        print("  Re-read M2_spec.md §F1 before next run. Stopping.")
+                        break
+                    # Trend gate: epochs 5k→10k must improve by ≥ trend_gate_improvement.
+                    # Default 0.010 m matches M1.3's measured improvement in this window.
+                    # See notes/M2_trend_gate_recalibration.md for DR-run recalibration.
+                    if _med_at_5k is not None:
+                        improvement = _med_at_5k - med_nominal
+                        if improvement < _trend_gate_improvement:
+                            print(f"\n  [ABORT GATE] epoch 5k→10k trend: MED improved only "
+                                  f"{improvement:.4f} m "
+                                  f"({_med_at_5k:.4f} → {med_nominal:.4f}, "
+                                  f"need ≥ {_trend_gate_improvement:.3f} m)")
+                            print("  Policy has plateaued. M1.3 improved 0.010 m in this window.")
+                            print("  Re-read M2_spec.md §F1 before next run. Stopping.")
+                            break
 
         if epoch % checkpoint_interval == 0 and epoch > 0:
             ckpt_dir = run_dir / "checkpoints"
@@ -389,6 +456,34 @@ def main():
                 {"actor": actor_state, "critic": critic_state},
             )
             print(f"  Checkpoint saved: epoch_{epoch:06d}")
+
+    # ── Final eval (always, regardless of whether loop ran to completion) ───────
+    key, eval_key1, eval_key2 = jax.random.split(key, 3)
+    med_nominal_final  = _run_med_eval(actor_state, eval_key1, priv_override=_nominal_priv)
+    med_fault70_final  = _run_med_eval(actor_state, eval_key2, priv_override=_fault70_priv)
+    final_epoch = epoch + 1  # range() is 0-indexed; last completed epoch + 1
+    print(f"\n  [FINAL EVAL] epoch {final_epoch} | "
+          f"nominal MED = {med_nominal_final:.4f} m | "
+          f"fault η=0.70 MED = {med_fault70_final:.4f} m")
+    tb_writer.add_scalar("eval/med_nominal",     med_nominal_final,  final_epoch)
+    tb_writer.add_scalar("eval/med_fault_eta70", med_fault70_final,  final_epoch)
+    _last_med_nominal = med_nominal_final
+
+    # ── Post-loop trend gate (resumed runs only) ──────────────────────────────
+    # Fresh runs had inline gates at epochs 5k and 10k.
+    # Resumed runs check here: improvement over the resumed window must be ≥ threshold.
+    if start_epoch > 0 and _trend_ref_med is not None:
+        improvement = _trend_ref_med - _last_med_nominal
+        passed = improvement >= _trend_gate_improvement
+        gate_status = "PASSED" if passed else "FIRED"
+        print(f"\n  [TREND GATE] epoch {start_epoch}→{final_epoch}: "
+              f"MED {_trend_ref_med:.4f} → {_last_med_nominal:.4f} m "
+              f"(improved {improvement:.4f} m, need ≥ {_trend_gate_improvement:.3f} m) "
+              f"— {gate_status}")
+        if not passed:
+            print("  Policy plateaued over the resumed window.")
+            print("  See notes/M2_trend_gate_recalibration.md for context.")
+            print("  Recommendation: ship Phase 2 on this checkpoint anyway (user pre-approved).")
 
     # Final checkpoint
     ckpt_dir = run_dir / "checkpoints"

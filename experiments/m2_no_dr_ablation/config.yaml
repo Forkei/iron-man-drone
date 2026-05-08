@@ -1,0 +1,90 @@
+# M2 No-DR Ablation — same architecture as M2 Phase 1, all DR disabled.
+# Purpose: isolate whether the 2.5x nominal regression (M1.3 0.037m → M2 0.091m on
+# figure-eight normal) is caused by the architecture changes (50-dim actor, priv_state input)
+# or by the DR itself (fault_prob=0.7, mass ±20%).
+# If this ablation hits ~0.037m → architecture is fine, DR is the culprit.
+# If this ablation also lands at ~0.090m → architecture itself is regressing nominal.
+
+experiment:
+  name: m2_no_dr_ablation
+  seed: 42
+  total_epochs: 15000
+  eval_every: 1000
+  checkpoint_every: 1000
+  log_every: 10
+
+env:
+  num_envs: 1024
+  sim_freq: 100
+  episode_len: 1000
+
+  # DR fully disabled — all nominal
+  dr:
+    thrust_coeff_range: [1.0, 1.0]
+    fault_prob: 0.0
+    eta_min: 1.0
+    mass_range: [1.0, 1.0]
+    wind: false
+
+  quadrotor:
+    mass: 0.0321
+    ixx: 1.4e-5
+    iyy: 1.4e-5
+    izz: 2.17e-5
+    kf: 2.350347298350041e-08
+    km: 7.24e-10
+    arm_length: 0.046
+    max_rotor_speed: 2315
+    motor_tau: 0.025
+
+  min_height: 0.05
+  max_bbox_dist: 5.0
+  max_tilt_deg: 60
+
+observation:
+  actor_dim: 50
+  critic_dim: 51
+  lookahead_points: 10
+  lookahead_dt_ms: 50
+  use_rotation_matrix: true
+  use_prev_action: false
+  use_body_rates: false
+
+action:
+  space: ctbr
+  dim: 4
+
+network:
+  hidden_dim: 256
+  num_layers: 3
+  activation: elu
+  use_layer_norm: true
+
+reward:
+  lambda_smooth: 0.4
+
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  actor_lr: 3.0e-4
+  critic_lr: 1.0e-4
+  critic_updates: 16
+  entropy_coeff: 1.0e-3
+  max_grad_norm: 0.5
+  value_loss_coeff: 0.5
+  num_minibatches: 8
+  ppo_epochs: 5
+  horizon: 32
+
+training:
+  trajectory_mix:
+    smooth_polynomial: 0.5
+    infeasible_zigzag: 0.5
+
+  sanity_check:
+    entropy_ratio_threshold: 0.10
+
+eval:
+  m2_targets:
+    figure_eight_normal_nominal: 0.037

@@ -13,18 +13,12 @@ build/
 venv/
 env/
 
-# Checkpoints / training artifacts
-experiments/*/checkpoints/
-experiments/*/logs/
-*.pt
-*.pth
-*.ckpt
-*.safetensors
+# Experiment run directories (timestamped, contain large binary checkpoints)
+# Only experiment-level config.yaml files are tracked.
+experiments/*/*_*/
 
-# Keep experiment configs and results
-!experiments/**/*.yaml
-!experiments/**/*.json
-!experiments/**/*_results.md
+# Root-level training logs
+*.log
 
 # Jupyter
 .ipynb_checkpoints/
@@ -56,3 +50,7 @@ mlruns/
 *.rosbag
 *.h5
 *.hdf5
+*.pt
+*.pth
+*.ckpt
+*.safetensors
