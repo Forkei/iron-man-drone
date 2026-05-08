@@ -1,6 +1,10 @@
-# Iron Man Drone
+# Agile quadrotor RL on consumer hardware
 
-Progressive reinforcement learning project for agile quadrotor flight. Five milestones from a clean SimpleFlight reproduction to GRaD-Nav++ language-commanded flight. Built on MuJoCo MJX + JAX.
+I'm a CS student on a break from school. I've been working through the literature on agile quadrotor reinforcement learning — SimpleFlight, RMA, MAVEN, GRaD-Nav++ — and building toward each one on a laptop with a 4070. The end goal is something close to GRaD-Nav++: a drone that you can command in natural language, that maps its environment in 3D, and that can recover from motor failures mid-flight. Five milestones.
+
+This is a personal project. It's also a dream I'm working toward.
+
+Built on MuJoCo MJX + JAX. Codenamed *Iron Man Drone*.
 
 ---
 
@@ -150,11 +154,11 @@ At t = 0, the reference is at (1, 0, 1) while the drone is at (0, 0, 1): 1 m ini
 
 ## Lessons from failed attempts
 
-**L1 — Resume-after-pause kills near-converged PPO.** Restoring params while reinitializing Adam momentum caused a jump from 0.085 m to 0.215 m MED immediately post-resume, followed by 11,000 epochs of unrecoverable crash-at-step-8 behavior. The policy entered a feedback loop where short rollouts (crash at step 8) provided gradient signal only for the initial observation, reinforcing the crash. Run uninterrupted; if forced to resume, restore full optimizer state including Adam μ, ν, and step count.
+**L1 — I paused a training run and lost two weeks of progress.** Restoring params while reinitializing Adam momentum caused a jump from 0.085 m to 0.215 m MED immediately post-resume, followed by 11,000 epochs of unrecoverable crash-at-step-8 behavior. The policy entered a feedback loop where short rollouts (crash at step 8) provided gradient signal only for the initial observation, reinforcing the crash. Run uninterrupted; if forced to resume, restore full optimizer state including Adam μ, ν, and step count.
 
-**L2 — Training reward is not a proxy for eval MED.** Training on 2048 random trajectories allows high mean reward even when the held-out figure-eight eval fails completely. A policy crashing on every figure-eight episode can maintain training reward of 1.33 because randomly-initialized polynomial episodes provide positive signal. Use held-out MED as the primary convergence signal.
+**L2 — I spent three weeks confused about why a "working" policy kept failing on figure-eight.** Training on 2048 random trajectories allows high mean reward even when the held-out figure-eight eval fails completely. A policy crashing on every figure-eight episode can maintain training reward of 1.33 because randomly-initialized polynomial episodes provide positive signal. Use held-out MED as the primary convergence signal.
 
-**L3 — Polynomial curvature coverage matters.** The original polynomial generator applied a scalar quintic profile to straight-line segments (κ=0 everywhere). The figure-eight apex has κ=4.789 m⁻¹. With 0% coverage of this curvature in training, the policy plateaued at 0.105 m on figure-eight. Replacing with C2-continuous piecewise quintic polynomials (random nonzero interior velocities) immediately dropped MED to 0.085 m in 2000 epochs.
+**L3 — The polynomial generator was wrong for a month before I noticed. It produced straight-line segments with a smooth speed profile — κ=0 everywhere. The figure-eight apex needs κ=4.8 m⁻¹. The drone wasn't undertrained; it was a perfect student of the wrong curriculum.** With 0% curvature coverage in training, the policy plateaued at 0.105 m on figure-eight. Replacing with C2-continuous piecewise quintic polynomials (random nonzero interior velocities) immediately dropped MED to 0.085 m in 2000 epochs.
 
 ---
 
