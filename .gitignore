@@ -54,3 +54,8 @@ mlruns/
 *.pth
 *.ckpt
 *.safetensors
+
+# Phase 2 bulk data and encoder checkpoint (too large for git)
+experiments/phase2_data/
+experiments/phase2_encoder/
+*.npz

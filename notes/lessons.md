@@ -35,6 +35,48 @@
 
 ---
 
+## L5 — Encoder startup instability: zero-padded history produces garbage ê_t for the first 50 steps
+
+**Observed (M2 Phase 2 closed-loop eval):** On figure_eight_fast + fault (η=0.70), 2/3 seeds crashed within the first 500 steps. On figure_eight_normal + fault, no crashes — the slower trajectory gave the policy enough slack to absorb bad ê_t estimates during the zero-padding window.
+
+**Root cause:** The causal encoder input at episode start is H=50 pairs of (obs_base, prev_action), all zeros. The encoder was never trained to handle zero-padded inputs at inference — training examples are sampled at t ∈ [49, 999] with a padded prefix, but the network still sees 49/50 real pairs at t=49. At deployment, all 50 pairs are zeros at t=0, and the encoder has to work through the padding window before it sees enough real history to identify the fault.
+
+**Why it didn't matter on figure_eight_normal:** The normal figure-eight is slow enough that the policy can recover from a few bad ê_t steps before tracking error compounds. Fast trajectories with simultaneous fault leave no margin.
+
+**Why this matters for M3:** Visual obstacle avoidance is exactly the regime where startup instability is dangerous — the policy may be asked to enter a cluttered environment from a standing start, where bad ê_t in the first 50 steps could cause early collision.
+
+**Fix options (choose one before M3, one variable at a time):**
+1. **Warmup buffer with replay:** Before the episode proper, roll out H steps in a safe open-air region to fill the ring buffer with real history. Simple but requires environmental assumptions.
+2. **Train on true zero-padded startup:** Sample training examples from t ∈ [0, 999] (not just t ≥ 49). The encoder sees real zero-padded prefixes during training and learns to handle them.
+3. **Recurrent encoder (LSTM/GRU):** Replace flat MLP with a recurrent architecture that processes (obs, action) pairs sequentially. Handles variable-length history naturally; startup state is the hidden state init (zeros = nominal assumption). More complex to train but eliminates the padding artifact entirely.
+
+**Lowest-risk fix:** option 2 (train on true zero-padded prefixes) — it's a one-line change to the `sample_batch` function (`t_idx = rng.integers(0, 1000, ...)` instead of `0, 951`).
+
+---
+
+## L6 — Verify numbers before reacting to them
+
+**Observed (three times in this project):**
+- M2 "2.5× regression" on figure_eight_normal: apparent degradation from 0.037 m → 0.105 m was entirely a methodology artifact. The M2 inline eval used t=0 (inflating by ~0.044 m + DR penalty); M1.3 used T/4-corrected. Correct comparison: 0.037 m → 0.044 m (1.2× — a real but small gap).
+- Encoder MSE prediction of 0.35: the user wrote "user prediction: normalized MSE ≈ 0.35" but intended 0.035 (normalized) or 0.35 raw. The encoder actually achieved 0.016, well within spec.
+- Polynomial crashes in Phase 1 eval: 2/3 seeds crashed. First interpretation was "Phase 1 policy is unstable on polynomial." Investigation showed it was a distribution mismatch at the fixed eval seeds, not a general instability.
+
+**Pattern:** In each case, a number appeared that was dramatically different from expectations. The correct first move — verify the number — was not always taken before anxiety set in.
+
+**Rule:** When a number is dramatically off expected (>2× in either direction), stop and verify: (1) Is the methodology consistent with what the reference number used? (2) Is the number reading the right column/field? (3) Does the number make physical sense? Only after verifying do you update your model of the world.
+
+---
+
+## L7 — Privileged-state prediction from observable history is more tractable than intuition suggests
+
+**Observed (M2 Phase 2):** A flat 2300→256→128→8 MLP trained on 20k episodes achieved val MSE 0.016 on normalized 8-dim privileged state — well below the spec gate of 0.020 and far better than the user's initial prediction of ~0.35. Training took less than 1 minute on a 4070.
+
+**What the encoder learned:** η₁–η₄ (rotor efficiencies) are the easiest channels (MSE ~0.011): a degraded rotor forces a compensating roll/pitch moment that is directly visible in the rotation matrix R and velocity v over a 0.5 s window. m_scale (mass variation ±20%) is harder (MSE ~0.076): mass scales all forces uniformly and is harder to decouple from k_f variation. Wind channels are trivially near-zero (Phase 1 used wind=0).
+
+**Implication:** When designing future systems, don't assume you need privileged access to physical state. The dynamics signature of perturbations is genuinely legible from a short window of observable (R, v, obs) history. Before adding a sensor or a privileged channel, ask whether a history encoder can learn it from what's already observable. The RMA pattern (train privileged first, then distill) is a reliable way to quantify this.
+
+---
+
 ## L4 — Polynomial generator was κ=0 from day 1 (M1/M1.1/M1.2)
 
 **Observed:** Original polynomial generator applied a quintic scalar `h(τ) = 10τ³-15τ⁴+6τ⁵` to straight-line direction vectors. Result: paths with κ=0 everywhere, velocity=0 at every waypoint. Training distribution had 0% coverage of figure-eight apex curvature (κ=4.789 m⁻¹).

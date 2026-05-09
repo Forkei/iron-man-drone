@@ -1,60 +1,86 @@
 # M1.3 Final Results — epoch_013000
 
-**Date:** 2026-05-05  
+**These numbers are canonical as of 2026-05-09 (eval_suite.py, GPU MJX backend, seeds [42, 99, 7]).
+Previous numbers from eval_m1_full.py / CPU mujoco are preserved in git history and explained below.**
+
 **Checkpoint:** `experiments/m1_3_polynomial_fix/m1_3_polynomial_fix_1777900285/checkpoints/epoch_013000`  
-**Eval methodology:** Corrected initialization matching SimpleFlight (arXiv 2412.11764).  
-Figure-eight: T/4 phase offset applied (traj starts at drone spawn position).  
-Pentagram/poly/zigzag: traj_t0=0, poly/zigzag first waypoint fixed to (0,0,1).  
-Aggregation: arithmetic mean over full 1000-step episode (no exclusion window).
+**Eval script (canonical):** `scripts/eval_m1_suite.py` → `src/iron_man_drone/evaluation/eval_suite.py`  
+**Results file:** `experiments/m1_suite_results.json`
 
 ---
 
-## Full Results Table
+## Canonical Results (eval_suite.py, 2026-05-09)
 
-| Trajectory | M1 Target | M1 Baseline (old) | M1.3 (old eval, broken) | **M1.3 (corrected eval)** | Paper (SimpleFlight 100Hz) |
-|---|---|---|---|---|---|
-| figure_eight_slow | < 0.050 m | — | — | **0.0170 m ✓ PASS** | 0.016 m |
-| figure_eight_normal | < 0.056 m | ~0.105 m | 0.069 m (cold-start inflated) | **0.0369 m ✓ PASS** | 0.028 m |
-| figure_eight_fast | < 0.150 m | — | — | **0.0895 m ✓ PASS** | 0.051 m |
-| pentagram_slow | — | — | — | 0.0544 m | 0.024 m |
-| pentagram_fast | — | — | — | 0.0639 m | 0.045 m |
-| polynomial (3 seeds) | — | — | — | 0.0162 ± 0.0018 m | 0.032 m |
-| zigzag (3 seeds) | — | — | — | 0.0265 ± 0.0014 m | 0.052 m |
+| Trajectory | MED (3-seed mean) | Seed range | Gate | Status |
+|---|---|---|---|---|
+| figure_eight_slow (T=15s) | **0.0200 m** | [0.0193, 0.0205] | ≤ 0.050 m | ✓ PASS |
+| figure_eight_normal (T=5.5s) | **0.0402 m** | [0.0387, 0.0414] | ≤ 0.056 m | ✓ PASS |
+| figure_eight_fast (T=3.5s) | **0.0938 m** | [0.0922, 0.0950] | ≤ 0.150 m | ✓ PASS |
+| pentagram_slow | 0.0581 m | [0.0575, 0.0590] | — | — |
+| pentagram_fast | 0.0675 m | [0.0672, 0.0679] | — | — |
+| polynomial | 0.0652 m | [0.0645, 0.0662] | — | — |
+| zigzag | 0.0434 m | [0.0429, 0.0441] | — | — |
 
-**Crashes:** 0 / 9 rollouts. All trajectories completed clean 1000 steps.
+**Crashes:** 0 / 21 rollouts (7 traj × 3 seeds). All trajectories completed all 1000 steps.
+
+**Eval methodology:** T/4 phase offset for figure-eight (offset=375/138/88 steps for slow/normal/fast).  
+Pentagram/polynomial/zigzag at t=0. Crash-only termination (no step timeout). GPU MJX lax.scan.
 
 ---
 
 ## OVERALL: PASS
 
-All three thresholded trajectories (figure-eight slow, normal, fast) are within M1 targets.  
-Zero crashes on all trajectory types including OOD held-outs.
+All three gated trajectories pass M1 thresholds under the canonical methodology.
 
 ---
 
-## Comparison: Old Eval vs Corrected Eval vs Paper
+## Previous Results (eval_m1_full.py, CPU mujoco, ~2026-05-05)
 
-| | Old inline eval | Corrected eval | Paper target |
+| Trajectory | Old MED | New MED | Delta | Why it changed |
+|---|---|---|---|---|
+| figure_eight_slow | 0.0170 m | 0.0200 m | +0.003 m | GPU vs CPU backend |
+| figure_eight_normal | 0.0369 m | 0.0402 m | +0.003 m | GPU vs CPU backend |
+| figure_eight_fast | 0.0895 m | 0.0938 m | +0.004 m | GPU vs CPU backend |
+| pentagram_slow | 0.0544 m | 0.0581 m | +0.004 m | GPU vs CPU backend |
+| pentagram_fast | 0.0639 m | 0.0675 m | +0.004 m | GPU vs CPU backend |
+| polynomial | 0.0162 m | 0.0652 m | **+0.049 m** | Methodology (see below) |
+| zigzag | 0.0265 m | 0.0434 m | **+0.017 m** | Methodology (see below) |
+
+### Backend shift (figure-eight and pentagram): systematic +0.003–0.004 m
+
+The GPU MJX lax.scan backend and CPU mujoco backend produce systematically different numbers for the same policy on the same trajectory. The difference is ~0.003 m on figure-eight normal, consistent across runs. This is documented in the `eval_suite.py` smoke test (expected_med=0.040, not 0.037). Both numbers are reproducible; the difference is not measurement noise.
+
+The GPU backend is now the reference. All M2 numbers use GPU MJX eval_suite.py, so M1 canonical numbers must also come from the same backend for valid comparison.
+
+### Polynomial and zigzag: methodology difference, not just backend
+
+The old eval fixed the first waypoint of random polynomial/zigzag trajectories to the drone's spawn position (0, 0, 1), eliminating cold-start tracking error. The eval_suite.py uses seeds [42, 99, 7] with random trajectories whose first waypoints are not constrained to spawn — initial tracking error is non-zero.
+
+This is the correct methodology for measuring trajectory-following capability. The old 0.016 m polynomial number was artificially low because the trajectory started exactly at the drone. The new 0.065 m is the honest number.
+
+Note: the SimpleFlight paper reports 0.032 m for polynomial — between old (0.016) and new (0.065). Different seeds, possibly different trajectory generator. The comparison is informational only; no polynomial gate exists.
+
+---
+
+## M1 Gate Outcome (canonical numbers)
+
+| Gate | Threshold | Result | Status |
 |---|---|---|---|
-| figure_eight_normal | 0.069 m | **0.037 m** | 0.028 m |
-| figure_eight_slow | — | **0.017 m** | 0.016 m |
-| figure_eight_fast | — | **0.090 m** | 0.051 m |
+| figure_eight_slow | ≤ 0.050 m | 0.020 m | ✓ PASS |
+| figure_eight_normal | ≤ 0.056 m | 0.040 m | ✓ PASS |
+| figure_eight_fast | ≤ 0.150 m | 0.094 m | ✓ PASS |
+| Zero crashes | 0 crashes | 0 / 21 | ✓ PASS |
 
-**Why the old eval was wrong:** Our `_run_med_eval` used `traj_t0=0`, placing the figure-eight reference at (1,0,1) while the drone spawned at (0,0,1). The 1m cold-start inflated the mean by ~0.044m. SimpleFlight uses `traj_t0 = T/4` (confirmed in `track.py`), which places the reference at (0,0,1) = drone spawn → zero initial error. The corrected eval applies the same T/4 offset.
-
-**Gap vs paper:** Figure-eight normal 0.037m vs paper 0.028m — a real 1.3× gap. Figure-eight slow essentially matches the paper (0.017m vs 0.016m). Figure-eight fast is 1.75× above paper (0.090m vs 0.051m). These gaps likely reflect that the paper trained at 100Hz with more aggressive DR; our implementation is at 100Hz but without all paper tuning details. The M1 targets (which we set conservatively) are all met.
+**M1 is complete and ships. git tag: m1-baseline.**
 
 ---
 
-## M1 Ship Decision
+## Comparison to Paper (SimpleFlight)
 
-**M1 is complete.** The policy meets all M1 success criteria:
-- figure_eight_normal MED < 0.056 m ✓ (0.037 m)
-- figure_eight_slow MED < 0.050 m ✓ (0.017 m)
-- figure_eight_fast MED < 0.150 m ✓ (0.090 m)
-- All benchmark trajectories complete without crash ✓
-- Stable reward/loss curves, polynomial curvature fix confirmed ✓
+| Trajectory | Ours (canonical) | Paper | Ratio |
+|---|---|---|---|
+| figure_eight_slow | 0.020 m | 0.016 m | 1.25× |
+| figure_eight_normal | 0.040 m | 0.028 m | 1.43× |
+| figure_eight_fast | 0.094 m | 0.051 m | 1.84× |
 
-**Next steps:**
-1. `git init` + `git tag m1-baseline` (repo not yet initialized)
-2. Begin M2 planning
+The gap is real — SimpleFlight used longer training and more aggressive tuning. The M1 targets (conservative) are all met. M2 trade-off: DR costs ~+0.017 m on figure_eight_normal (see M2_results.md), which is acceptable for fault tolerance.
