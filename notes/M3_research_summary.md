@@ -10,6 +10,8 @@
 
 **Sourcing caveat:** arXiv and Science Robotics PDFs returned HTTP 403 from research sandbox. Loquercio numerics are reconstructed from the `agile_autonomy` repo configs (verified line-by-line). Swift numerics from PMC mirror + Nature page. GRaD-Nav numerics from author project page + alphaXiv/ResearchGate snippets — several fine-grained details are flagged as "not specified in available sources."
 
+**Verification pass 2026-05-10 (this revision):** A second research pass attempted primary-source verification on four flagged claims (Swift reward weights + DR ranges, GRaD-Nav++ depth resolution + obs construction, Loquercio MH expert details, MAVEN compute setup). All ar5iv, Nature, Science Robotics, PMC, PubMed, ADS, semanticscholar, alphaXiv, ResearchGate, and author-lab PDF mirrors continued to return HTTP 403. **GitHub `blob/main` raw-file endpoints did resolve** and were the workhorse for code-config-based verification (Loquercio agile_autonomy configs, GRaD-Nav code/configs). Numbers verified by this pass are noted inline; numbers still unverified are tagged **(unverified)** and listed in Part 9 ("Verification debt").
+
 ---
 
 ## Part 1 — Observation architectures
@@ -49,18 +51,30 @@ Swift's policy **does not consume images.** Upstream perception (VIO + CNN gate-
 
 ### 1.3 GRaD-Nav / GRaD-Nav++ (RGB, not depth)
 
+Values below are verified against the public code repo (`Qianzhong-Chen/grad_nav`) line-by-line as of 2026-05-10.
+
 | Field | Value | Source |
 |---|---|---|
-| Modality v1 | **RGB**, not depth | Project page + abstract |
-| Modality v++ | RGB + natural-language instruction (frozen CLIP for both) | |
-| Resolution / FOV / rate | Not specified in available snippets | |
-| Encoder v1 | **Pretrained SqueezeNet** (~1.2 M params) | |
-| Encoder v++ | Frozen CLIP image+text encoder | |
-| Goal in obs | Next waypoint vector | |
-| Context encoder | **CENet-style GRU/recurrent** over (state, action, vision) history — architecturally equivalent to our M2 RMA encoder | |
+| Modality v1 | **RGB**, 3 channels | `models/squeeze_net.py: input_channels=3` |
+| Modality v++ | RGB + natural-language instruction (frozen CLIP for both); **no GRaD-Nav variant uses depth in the actor obs** | `examples/cfg/gradnav_vla_moe/drone_long_task.yaml: DEPTH_DATA: False` |
+| Resolution | **224×224**, adaptive-pooled from variable 3DGS render | `envs/drone_long_traj.py: nn.AdaptiveAvgPool2d((224, 224))` |
+| FOV | Not specified in retrievable configs (likely per-scene 3DGS metadata) | — |
+| Rate (training) | Every env step (`gs_freq=1`) | `envs/drone_long_traj.py` |
+| Rate (deployment) | 30 Hz onboard | Project page |
+| Encoder v1 | **Pretrained SqueezeNet** (~1.2 M params), output dim **16** | `models/squeeze_net.py` + cfg `SINGLE_VISUAL_INPUT_SIZE: 16` |
+| Encoder v++ | Frozen CLIP image+text encoder, output dim **32** | cfg `SINGLE_VISUAL_INPUT_SIZE: 32` (v++) |
+| History buffer | **5 frames** | `HISTORY_BUFFER_NUM: 5` |
+| Latent context dim | **24** | `LATENT_VECT_NUM: 24` |
+| Context encoder | VAE-style; encoder `[256, 256, 256]`, decoder `[32, 64, 128, 256]`, KL weight 1.0 | Drone configs |
+| Policy MLP (actor and critic) | `[512, 256, 128]`, ELU | `ActorStochasticMLP` config |
+| Goal in obs | Next waypoint vector + ego z-position (1) + z-velocity (1) + quat (4) + current/prev cmd (4+4) + linear vel (3) | `envs/drone_long_traj.py` obs construction |
 | Action head v1 | MLP | |
-| Action head v++ | Mixture-of-Experts | |
-| Action rate | 30 Hz onboard | Project page |
+| Action head v++ | Mixture-of-Experts, 2 experts, top-k=2, `lambda_balance: 7.5`, `lambda_entropy: 0.1` | v++ cfg |
+| Optimizer | actor/critic lr 1e-4, VAE lr 5e-4, γ=0.99, λ=0.95 | Drone configs |
+| Parallel envs (training) | 128 | `num_actors: 128` |
+| Episode length | 600 (long traj) / 400 (multi-gate) / 500 (long task v++) | Drone configs |
+| Max training epochs | 600 / 1800 / 1000 (per config) | Drone configs |
+| Multi-task scope | **task IDs [0,1,2,3] in `drone_long_task.yaml`** (the "8 tasks" claim from the project page aggregates across multiple config files) | v++ cfg |
 
 ### 1.4 Convergent patterns across the three
 
@@ -88,22 +102,38 @@ The three papers span a wide range of perception bandwidth:
 
 ### 2.1 Loquercio — privileged-expert DAgger
 
+Verified against the `uzh-rpg/agile_autonomy` repo (2026-05-10 pass):
+
 - **Imitation learning, NOT RL.** A sampling-based motion planner with full obstacle-geometry access generates labels; a student depth-CNN policy learns to imitate.
-- **Expert:** Metropolis-Hastings sampling, cost = progress along reference + clearance from obstacles. Returns top-K trajectories; K=3 become labels.
-- **Loss:** `MixtureSpaceLoss` (winner-takes-all regression on M=3 modes + confidence classification) + `TrajectoryCostLoss` (re-evaluates predicted trajectories against the GT point cloud, penalizing collisions even on modes the expert never showed).
-- **Training procedure:** DAgger. `max_rollouts: 100`, `train_every_n_rollouts: 10`, `increase_net_usage_every_n_rollouts: 10`.
-- **Optimizer:** Adam, lr=1e-3 cosine-decayed, batch=8, max 150 epochs.
+- **Expert:** Metropolis-Hastings sampling against the simulated point cloud.
+  - **`max_steps_metropolis: 50000`** per trajectory generation (`label_generation.yaml`).
+  - **`save_n_best: 5`** trajectories retained per label; **top-3 become the multi-modal training labels** (`train_settings.yaml: modes: 3`).
+  - **Proposal distribution:** spherical jitter with `rand_theta: 0.15, rand_phi: 0.2`.
+  - **Acceptance:** `α = min(1.0, (exp(-0.01 × curr_cost) + 1e-7) / (exp(-0.01 × prev_cost) + 1e-7))`. Temperature constant **0.01** (`traj_sampler.cpp: computeCost`).
+  - **Trajectory parameterization:** 10 waypoints at `traj_dt: 0.1 s`, polynomial order 4, continuity order 1.
+  - **Drone bounding box for collision check:** 0.30 × 0.30 × 0.20 m.
+- **Cost function** (`traj_sampler.cpp: computeCost`):
+  - Tracking: `Σ_t [Q_xy·(Δx² + Δy²) + Q_z·Δz² + Q_vel·|Δv|² + Q_att·|Δq|²]`.
+  - Collision: kd-tree query, with `crash_dist: 0.5 m` and `crash_penalty: 9999.0`.
+  - **Exact Q_xy / Q_z / Q_vel / Q_att values not in retrievable YAMLs** — loaded from a parameter file outside the public config paths. **(unverified)**
+  - `save_max_cost: 9000.0` discards labels above this threshold.
+- **Loss:** `MixtureSpaceLoss` (winner-takes-all regression on M=3 modes + confidence classification) + `TrajectoryCostLoss` (re-evaluates predicted trajectories against the GT point cloud).
+- **DAgger procedure:** `max_rollouts: 100`, `train_every_n_rollouts: 10`, `increase_net_usage_every_n_rollouts: 10` (β schedule), `fallback_radius_expert: 10 m` (student-deviation safety net), `network_frequency: 15.0 Hz`.
+- **Optimizer:** Adam, lr=1e-3 cosine-decayed, batch=8, max 150 epochs (`train_settings.yaml`).
 - **Simulator:** Flightmare (Unity-based, with simulated SGM stereo to produce noisy depth — not GT depth).
+- **GPU and wall-clock time:** not in retrievable configs; README only states "training a policy from scratch could require a lot of data, and depending on the speed of your machine this could take several days." **(unverified)**
 
 ### 2.2 Swift — PPO on low-D state
 
 - **PPO, on-policy, model-free.** Adam lr=3e-4, 100 parallel agents, episodes of 1500 steps.
 - **Total experience:** ~1e8 env steps, ~50 min on i9-12900K + RTX 3090.
-- **Reward (sum per step):**
-  1. **Progress** — change in distance toward next gate centre along racing line.
-  2. **Perception** — penalty on angle between camera axis and direction to next gate (keeps gate detectable).
-  3. **Smoothness** — quadratic on body-rate command and its time derivative.
-  4. Sparse gate-pass bonus; crash penalty + termination.
+- **Reward structure (sum per step):** confirmed structurally from search-indexed snippets traceable to the paper Methods section.
+  1. **Progress (`r_prog`)** — change in distance toward next gate centre along racing line. Coefficient `λ₁`. **(unverified)**
+  2. **Perception (`r_perc`)** — penalty on angle between camera axis and direction to next gate, with exponential weighting. Coefficients `λ₂, λ₃`. **(unverified)**
+  3. **Command smoothness (`r_cmd`)** — quadratic on body-rate command and its time derivative. Coefficients `λ₄, λ₅`. **(unverified)**
+  4. **Crash penalty + termination (`r_crash`)** — binary on collision or out-of-bounds. **(unverified magnitude)**
+- **Exact numerical λ values: NOT verified.** Documented as Extended Data Table 1a in the Nature paper, which was 403-blocked from the research sandbox across all mirrors. **Do not transcribe λ numbers from secondary sources into our spec.** See Part 9 (Verification debt).
+- **Domain randomization ranges (per Extended Data Table 1):** mass, k_f, k_m, motor τ, IMU bias and noise, observation/action latency, gate pose perturbations. **Exact ranges NOT verified.** **(unverified)**
 - **Action space:** **CTBR (collective thrust + body rates), 4-dim continuous.** Same as our project.
 - **Simulator:** custom rigid-body sim on the Agilicious dynamics stack (BEM-based aero). Flightmare is the renderer for evaluation, not for training (Swift training never renders — its observation is state, not pixels).
 
@@ -160,7 +190,7 @@ The three papers span a wide range of perception bandwidth:
 4. **Sparse gate-pass bonus** on success.
 5. **Crash penalty + episode termination** on collision or out-of-bounds.
 
-**Exact numerical coefficients:** in Extended Data Table 1, not retrievable from accessible mirrors. Read directly from the Nature PDF before transcribing.
+**Exact numerical coefficients NOT verified — `λ₁…λ₅` documented as Extended Data Table 1a in the Nature paper, which was 403-blocked from this sandbox across all mirrors.** Read directly from the Nature PDF (campus IP or manual download) before transcribing into the M3 spec. For now, the convergent reward shape we use in M3 (§4.3) does not depend on Swift's exact weights — we tune `w_clear` to satisfy the "entropy < 10% of reward at init" rule from project lessons.
 
 ### 4.2 GRaD-Nav — minimalism
 
@@ -281,3 +311,26 @@ These don't have clean answers from the literature; they need designer decisions
 5. **Procedural obstacle parameters.** Loquercio's 4 m grid + 5 m jitter is for forest at 7 m/s. At our 3 m/s cap, we can tolerate denser (closer-spaced) obstacles. Likely halve the spacing.
 6. **Fault tolerance preservation.** M2 shipped RMA with single-rotor faults + mass DR. Does M3 keep the M2 encoder `z` in obs, or rebuild from scratch for vision? See §F1 in `M3_spec.md`.
 7. **Eval scene definition.** A held-out procedural seed range + a hand-built "demo scene" for video. Specify exact scene.
+
+---
+
+## Part 9 — Verification debt (post-2026-05-10 pass)
+
+The following numbers are referenced in this document or in the M3 spec but **could not be verified against primary sources** in the 2026-05-10 verification pass. All paper-PDF hosts (Nature, Science Robotics, arxiv.org, ar5iv, PMC, PubMed, semanticscholar, ResearchGate, alphaxiv, lab mirrors) returned HTTP 403. GitHub `blob/main` raw-file paths did resolve and accounted for everything else.
+
+| # | Claim | Status | Fallback |
+|---|---|---|---|
+| 1 | Swift reward weights `λ₁…λ₅` (Nature Extended Data Table 1a) | **Not verified** | Do not transcribe from secondary sources. M3 spec tunes `w_clear` to satisfy the "entropy < 10% of reward at init" rule from project lessons — independent of Swift's exact values. |
+| 2 | Swift DR ranges (mass, k_f, k_m, motor τ, IMU noise/bias, latency, gate pose perturbations) | **Not verified** | M3 keeps M1/M2 DR ranges (k_f ± 30%, mass per M2 spec). Swift's DR is not gating for M3 because M3 doesn't yet attempt sim-to-real. Revisit for M5. |
+| 3 | Loquercio MH cost Q weights (Q_xy, Q_z, Q_vel, Q_att) | **Not verified** (live in a parameter file outside the public configs) | M3 does not use DAgger — we use PPO with shaped reward. Loquercio's exact Q balance is informative but not gating. |
+| 4 | Loquercio GPU model + total wall-clock training time | **Not verified** (paper-only, not in repo) | Compute estimate for M3 is derived from our own MJX throughput, not from Loquercio's hardware. |
+| 5 | MAVEN GPU model | **Not verified** — prior research pass claimed "RTX 5090" but this is not corroborated in any indexed snippet from the MAVEN paper. **Treat as paraphrase artifact.** | If a GPU number is needed, cite "Genesis simulator, single GPU model unspecified in retrievable text; Genesis benchmarks ran on RTX 4090, so a 4090-class card is the literature-consensus assumption." |
+| 6 | MAVEN concurrent task count | **Corrected to 2 task scenarios**, not 20. The paper demonstrates mass variation and single-rotor thrust loss; each task scenario uses 4096 parallel envs. The prior pass's "20 tasks" claim is wrong. | Cite the corrected value: "2 task scenarios, 4096 parallel envs each, ~5–7 × 10⁹ steps, 35–53 min wall-clock on Genesis." |
+| 7 | GRaD-Nav camera FOV | **Not verified** (likely per-scene 3DGS metadata, not in public configs) | Not gating for M3 — we set our own FOV (90°) per Loquercio convention. |
+
+**Action plan:**
+- Items 1, 2, 3, 4: defer to a human PDF pull from a campus IP when convenient. None block M3.
+- Item 5, 6: corrected in this revision. MAVEN compute setup is now stated correctly: 4096 envs/task, ~35–53 min, GPU model unspecified.
+- Item 7: not needed for M3 design.
+
+**Note on MAVEN paper title:** the prior pass referenced MAVEN as "Mass and Actuator Variation"; the correct title is **"MAVEN: A Meta-Reinforcement Learning Framework for Varying-Dynamics Expertise in Agile Quadrotor Maneuvers"** (Zhou et al., Zhejiang University, arXiv:2603.10714, March 2026). The MAVEN summary in `notes/M2_research_summary.md` should be cross-referenced and corrected separately if that doc claims "20 tasks" or "RTX 5090." (See `notes/M2_research_summary.md §1.5` for the original claim that needs correction.)

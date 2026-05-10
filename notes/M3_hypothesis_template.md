@@ -26,7 +26,8 @@
 - [ ] Trajectory placement respects clearance buffer: 100 random episodes, verify no obstacle within `clearance_buffer = drone_radius + 0.15` of reference
 - [ ] Actor input 58-dim, critic input 67-dim (or document deviation): print shapes
 - [ ] Sanity gates pass: `python scripts/sanity_check_m3.py`
-- [ ] Pinned Genesis version (`genesis-world==0.4.6`) — same as M2.5
+- [ ] Pinned simulator stack: `mujoco-mjx>=3.8.0`, `warp-lang>=1.11`. Same as M2.5 (MJWarp camera integration).
+- [ ] Physics backend confirmed: XLA, not MJWarp's warp backend (project rule, per M3_spec §F5b)
 - [ ] Throughput baseline: pre-training warm-up confirms ≥ 10k env-steps/sec with rendering
 
 ---

@@ -1,8 +1,19 @@
 # M2.5 Spec — Genesis Port
 
+> **⚠️ SUPERSEDED (2026-05-10, same day as authoring).** The peer-comparison in
+> `notes/M3_sim_choice_decision.md` rejected the Genesis migration in favor of
+> staying on MJX and adding MJWarp's native batch renderer. This document is
+> retained as a record of the option that was evaluated and not chosen — and
+> as a reference for the install gates, fallback decision tree, and time-box
+> discipline, which are reusable patterns. **The M2.5 milestone reframes from
+> "Genesis port" to "MJWarp depth-rendering integration" — see
+> `notes/M3_sim_choice_decision.md` for the actual implementation plan.**
+>
+> Do not start a Genesis port based on this document.
+
 **Date:** 2026-05-10
 **Prerequisite reading:** `notes/M3_genesis_assessment.md`, `notes/M2_spec.md`, `notes/lessons.md`
-**Status:** Draft — awaiting user approval before any code or environment changes.
+**Status:** **Superseded** — retained for historical reference only.
 
 ---
 

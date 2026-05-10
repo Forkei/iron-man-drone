@@ -1,20 +1,21 @@
 # M3 Spec — Visual Reactive Obstacle Avoidance
 
-**Date:** 2026-05-10
-**Prerequisite reading:** `notes/M3_research_summary.md`, `notes/M3_genesis_assessment.md`, `notes/M2_5_genesis_port_spec.md`, `notes/M2_spec.md`, `notes/lessons.md`
+**Date:** 2026-05-10 (rev 2026-05-10, sim choice update)
+**Prerequisite reading:** `notes/M3_sim_choice_decision.md`, `notes/M3_research_summary.md`, `notes/M2_spec.md`, `notes/lessons.md`
+**Historical reference (option not chosen):** `notes/M3_genesis_assessment.md`, `notes/M2_5_genesis_port_spec.md`
 **Status:** Draft — requires hypothesis doc approval and M2.5 baseline pass before any code is written.
 
 ---
 
 ## One-line goal
 
-A single PPO policy that, given a forward-facing depth observation, **avoids static obstacles** while **preserving M1.3-equivalent trajectory tracking** when the world is obstacle-free. Trained on procedural cluttered scenes in Genesis. Reactive, no planning, no backtracking. Trained speed cap 3 m/s; eval stretch to 4–5 m/s.
+A single PPO policy that, given a forward-facing depth observation, **avoids static obstacles** while **preserving M1.3-equivalent trajectory tracking** when the world is obstacle-free. Trained on procedural cluttered scenes in **MJX with MJWarp's batch renderer** (sim choice resolved in `M3_sim_choice_decision.md`). Reactive, no planning, no backtracking. Trained speed cap 3 m/s; eval stretch to 4–5 m/s.
 
 ---
 
 ## Pre-conditions (gates before any M3 code)
 
-- [ ] M2.5 (Genesis port) ships: figure_eight_normal MED ≤ 0.060 m on Genesis, zero crashes on full M1 eval suite. See `M2_5_genesis_port_spec.md` for full criteria.
+- [ ] **M2.5 milestone ships** — defined as: MJWarp batch renderer integrated into the existing MJX env, `figure_eight_normal` MED ≤ 0.060 m preserved with a forward-facing camera attached to the drone (no regression from M2 baseline), zero crashes on full M1 eval suite. See `notes/M3_sim_choice_decision.md` for the MJWarp validation spike protocol and `M2_5_genesis_port_spec.md` for the **superseded** Genesis-port plan that was evaluated and rejected.
 - [ ] `notes/M3_hypothesis.md` written by hand (gating artifact, by project rule).
 - [ ] Sanity check `scripts/sanity_check_m3.py` passes — including the new depth-obs-not-NaN gate and entropy &lt; 10% reward gate.
 
@@ -24,11 +25,13 @@ A single PPO policy that, given a forward-facing depth observation, **avoids sta
 
 ## What carries over from M2.5 baseline
 
+With the MJWarp decision, this is a strictly additive milestone — everything from M2 stays intact, plus a forward-facing depth camera.
+
 - C2-continuous quintic polynomial trajectory generator (`envs/trajectories.py`)
-- Reward off-by-one fix (verified on Genesis port)
+- Reward off-by-one fix (still in place on the unchanged MJX env)
 - T/4 phase offset for figure-eight eval
 - Asymmetric actor/critic (3-layer MLP, 256 hidden, ELU + LayerNorm)
-- Separate Flax modules with separate Optax optimizers (preserved via DLPack bridge from M2.5)
+- Separate Flax modules with separate Optax optimizers (**unchanged — JAX stack stays intact, no DLPack bridge needed**)
 - PPO hyperparameters (γ=0.99, λ=0.95, clip=0.2, entropy_coeff=1e-3, actor_lr=3e-4, critic_lr=1e-4) as starting point
 - CTBR action space — **never motor commands**, project rule
 - Rotation matrix in obs — never quaternion, project rule
@@ -36,6 +39,7 @@ A single PPO policy that, given a forward-facing depth observation, **avoids sta
 - No k in actor — critic only (project rule)
 - Existing k_f ± 30% DR (carried from M1, kept in M2, kept in M3)
 - All eval scripts and notes structure
+- **MJX physics on the XLA backend** (M1.3 / M2 numbers depend on this; do not switch to MJWarp's physics backend at this milestone)
 
 ---
 
@@ -45,15 +49,15 @@ Three additions, all introduced together at epoch 0 — no fine-tuning a converg
 
 ### A. Depth observation
 
-**Sensor model in Genesis:**
+**Sensor model (MJX MJCF + MJWarp render):**
 
-- Forward-facing depth camera, mounted at drone CoM, **0° pitch** (matches Loquercio).
-- Resolution: **64×64** (Madrona-comfortable, low-bandwidth).
-- HFOV: **90°** (matches Loquercio's 91° within rounding).
-- Max range: **5.0 m** (depth clipped beyond).
+- Forward-facing depth camera defined as a `<camera name="fpv" pos="0.02 0 0" xyaxes="0 -1 0 0 0 1" fovy="90"/>` element under the drone body in `crazyflie.xml`. Single source of truth for camera intrinsics — MJCF, not Python.
+- Resolution: **64×64** (low-bandwidth; raise only if throughput is comfortably above 30k env-steps/sec after M2.5).
+- HFOV: **90°** via `fovy` in the MJCF (matches Loquercio's 91° within rounding).
+- Max range: **5.0 m** (depth clipped beyond by `render_util.get_depth` `far` argument).
 - Update rate: **30 Hz** (every 3 policy steps, since policy runs at 100 Hz). Matches GRaD-Nav onboard rate; cheaper than rendering every 10 ms.
-- Render path: `gs.renderers.BatchRenderer(use_rasterizer=False)` (Madrona CUDA single-bounce). Verify depth values via the spike per `M3_genesis_assessment.md` §3.
-- **Noise injection:** add Gaussian noise σ=0.02·d per pixel, plus 1% dropout (set to max_range, "no return"). Mirrors Loquercio's SGM-noisy depth — the key sim-to-real lever. **Do not train on perfect depth.**
+- Render path: `mjx.warp.render.render` followed by `render_util.get_depth(rc, cam_id, depth_packed, far=5.0)`. NVIDIA Warp BVH ray-trace, CUDA-only. Per-step: physics → `bvh.refit_bvh` → `render.render` → `get_depth`. Returns a JAX array of shape `(n_envs, 64, 64, 1)` inside `jax.jit`/`vmap`.
+- **Noise injection:** add Gaussian noise σ=0.02·d per pixel, plus 1% dropout (set to max_range, "no return") in JAX after `get_depth`. Mirrors Loquercio's SGM-noisy depth — the key sim-to-real lever. **Do not train on perfect depth.**
 
 **Actor input: min-pooled depth bins, not raw image.**
 
@@ -286,15 +290,22 @@ M3 ships if and only if **all** of the following pass:
 ### F4 — Depth obs is noisy in a way that breaks the policy
 
 **Symptom:** Policy works fine in sim with `noise=0` ablation, fails with the planned σ=0.02·d + 1% dropout.
-**Cause:** noise model isn't matched to Genesis's depth output distribution.
+**Cause:** noise model isn't matched to MJWarp's depth output distribution.
 **Diagnostic:** plot histograms of `d_bins` with noise on vs off.
 **Fix:** retune noise model. Should not be a blocker but is a known sim-to-real lever to revisit before M5.
 
-### F5 — Genesis BatchRenderer depth values inconsistent (issue #1648)
+### F5 — MJWarp render-vs-physics inconsistency
 
-**Symptom:** Depth values disagree with computed ground-truth ranges. Open Genesis bug.
-**Diagnostic:** sanity check at every Genesis version bump — render a known-distance plane, verify depth value.
-**Fix:** stay on the validated Genesis version (pinned in M2.5 spec). Do not upgrade Genesis during M3 training.
+**Symptom:** Depth values disagree with computed ground-truth ranges (e.g., a known-distance plane reports the wrong depth), or the depth tensor contains NaN/Inf after BVH refit.
+**Diagnostic:** sanity check at every MJWarp version bump — render a known-distance plane, verify depth value matches `mjx.ray` distance to a single decimal. Verify BVH refit is called between physics step and render step (skipping it gives stale geometry).
+**Fix:** pin MJWarp version (`mujoco-mjx>=3.8.0`, `warp-lang>=1.11`). Do not upgrade MJWarp during M3 training. If the issue is the BVH ordering, audit the env step to confirm physics → `bvh.refit_bvh` → `render.render` is the correct sequence on every call.
+
+### F5b — Accidental physics-backend switch
+
+**Symptom:** M1.3 nominal MED suddenly disagrees with the M1.3 baseline number (0.037 m) by more than 5% after the M2.5 milestone, despite no policy changes.
+**Cause:** the env or training script accidentally switched from MJX-XLA to MJWarp's physics backend. Different float reductions and solver ordering can shift trajectories at the sub-cm scale.
+**Diagnostic:** print the physics backend at env init. Confirm it reads "xla" not "warp."
+**Fix:** add an assertion at env init that locks the physics backend to XLA for M3. MJWarp's physics backend is a separate experiment post-M3.
 
 ### F6 — Resume-after-pause (L1 lessons.md)
 
