@@ -107,6 +107,9 @@ def main():
     parser.add_argument("--trend_gate_improvement", type=float, default=0.010,
                         help="Min MED improvement required over the 5k-epoch trend window "
                              "(default 0.010 for fresh runs; use 0.005 for DR-resumed runs)")
+    parser.add_argument("--env", choices=["m2", "depth"], default="m2",
+                        help="Environment backend: m2 = standard VecEnv, "
+                             "depth = DepthVecEnv with MJWarp rendering (SC-6)")
     args = parser.parse_args()
 
     import yaml
@@ -167,22 +170,37 @@ def main():
     assert len(jax.devices()) > 0
     key = jax.random.PRNGKey(cfg.get("experiment", {}).get("seed", 42))
 
-    from iron_man_drone.envs.quadrotor_env import VecEnv
-
     class SimpleConfig:
         def __init__(self, d):
             self.__dict__.update(d)
 
     env_cfg = SimpleConfig({"num_envs": flat_cfg["num_envs"]})
-    env = VecEnv(
-        env_cfg,
-        fault_prob=fault_prob,
-        eta_min=eta_min,
-        mass_lo=mass_lo,
-        mass_hi=mass_hi,
-    )
-    print(f"Environment loaded. {flat_cfg['num_envs']} parallel envs.")
-    print(f"DR: fault_prob={fault_prob}, eta_min={eta_min}, mass=[{mass_lo},{mass_hi}]")
+
+    if args.env == "depth":
+        from iron_man_drone.envs.quadrotor_env_depth import DepthVecEnv
+        n_obstacles = cfg["env"].get("n_obstacles", 4)
+        env = DepthVecEnv(
+            env_cfg,
+            n_obstacles=n_obstacles,
+            fault_prob=fault_prob,
+            eta_min=eta_min,
+            mass_lo=mass_lo,
+            mass_hi=mass_hi,
+        )
+        print(f"Environment loaded: DepthVecEnv. {flat_cfg['num_envs']} parallel envs.")
+        print(f"n_obstacles={n_obstacles}  DR: fault_prob={fault_prob}, "
+              f"eta_min={eta_min}, mass=[{mass_lo},{mass_hi}]")
+    else:
+        from iron_man_drone.envs.quadrotor_env import VecEnv
+        env = VecEnv(
+            env_cfg,
+            fault_prob=fault_prob,
+            eta_min=eta_min,
+            mass_lo=mass_lo,
+            mass_hi=mass_hi,
+        )
+        print(f"Environment loaded: VecEnv. {flat_cfg['num_envs']} parallel envs.")
+        print(f"DR: fault_prob={fault_prob}, eta_min={eta_min}, mass=[{mass_lo},{mass_hi}]")
 
     from iron_man_drone.policy.ppo import PPOConfig, create_train_states, collect_rollout, ppo_update
 

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Crazyflie 2.1 + depth camera + randomizable obstacles — M2.5 depth env.
+
+  Physics sections are byte-identical to crazyflie.xml (same timestep, integrator,
+  inertia, rotor sites).  Additions vs the base model:
+
+    1. N_OBSTACLE_SLOTS = 16 mocap box bodies (obstacle_0 … obstacle_15)
+         half-extents: 0.05 × 0.05 × 0.5 m  →  box 0.1 × 0.1 × 1.0 m
+         Inactive slots are parked at (100, 100, 100) between episodes.
+         Active slots are positioned via data.mocap_pos at reset time.
+
+    2. Forward-facing depth camera body-fixed on drone
+         name="depth_cam"  fovy=60°  res=64×64  clipfar=5 m
+         The 5 m far-plane covers the M3 flight envelope (6×6 m arena).
+
+  Drone geoms have contype=0 — drone-obstacle collision is intentionally not
+  modeled in M2.5.  M3 will add a collision reward and termination condition.
+
+  MJWarp render notes:
+    - mjw.get_depth(rc, cam_id, 5.0, depth_buf) to normalize 0–5 m → 0–1.
+    - Obstacle render positions are written from EnvState.obstacle_positions
+      directly into the MJWarp data in batch_render(), bypassing MJX mocap
+      propagation (see quadrotor_env_depth.py — DepthVecEnv.batch_render).
+-->
+<mujoco model="crazyflie_depth">
+
+  <compiler angle="radian" autolimits="true"/>
+
+  <option
+    timestep="0.01"
+    gravity="0 0 -9.81"
+    integrator="RK4"
+    iterations="1"
+    tolerance="1e-10"/>
+
+  <default>
+    <geom contype="1" conaffinity="1" condim="3" friction="1.0 0.005 0.0001"/>
+  </default>
+
+  <worldbody>
+
+    <light name="sky" directional="true" pos="0 0 5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" pos="0 0 0" size="20 20 0.1"
+          rgba="0.5 0.6 0.5 1" contype="1" conaffinity="1"/>
+
+    <!-- N_OBSTACLE_SLOTS = 16 randomizable mocap box obstacles.
+         All slots present in MJCF so model structure is static (no rebuild on reset).
+         Inactive slots parked at (100, 100, 100) — outside scene and frustum. -->
+    <body name="obstacle_0"  mocap="true" pos="100 100 100"><geom name="obs_geom_0"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_1"  mocap="true" pos="100 100 100"><geom name="obs_geom_1"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_2"  mocap="true" pos="100 100 100"><geom name="obs_geom_2"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_3"  mocap="true" pos="100 100 100"><geom name="obs_geom_3"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_4"  mocap="true" pos="100 100 100"><geom name="obs_geom_4"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_5"  mocap="true" pos="100 100 100"><geom name="obs_geom_5"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_6"  mocap="true" pos="100 100 100"><geom name="obs_geom_6"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_7"  mocap="true" pos="100 100 100"><geom name="obs_geom_7"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_8"  mocap="true" pos="100 100 100"><geom name="obs_geom_8"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_9"  mocap="true" pos="100 100 100"><geom name="obs_geom_9"  type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_10" mocap="true" pos="100 100 100"><geom name="obs_geom_10" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_11" mocap="true" pos="100 100 100"><geom name="obs_geom_11" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_12" mocap="true" pos="100 100 100"><geom name="obs_geom_12" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_13" mocap="true" pos="100 100 100"><geom name="obs_geom_13" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_14" mocap="true" pos="100 100 100"><geom name="obs_geom_14" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+    <body name="obstacle_15" mocap="true" pos="100 100 100"><geom name="obs_geom_15" type="box" size="0.05 0.05 0.5" rgba="0.7 0.3 0.2 1"/></body>
+
+    <body name="drone" pos="0 0 0.5">
+      <freejoint name="root"/>
+
+      <!-- Mass and inertia: byte-identical to crazyflie.xml -->
+      <inertial
+        mass="0.0321"
+        pos="0 0 0"
+        diaginertia="1.4e-5 1.4e-5 2.17e-5"/>
+
+      <!-- contype=0: drone does not participate in contact detection.
+           Forces applied via xfrc_applied; drone-obstacle collision not modeled (M3). -->
+      <geom name="body_viz" type="cylinder" size="0.023 0.008"
+            pos="0 0 0" rgba="0.15 0.15 0.7 1" mass="0"
+            contype="0" conaffinity="0"/>
+      <geom name="arm_x" type="box" size="0.033 0.003 0.002"
+            pos="0 0 0" rgba="0.3 0.3 0.3 1" mass="0"
+            contype="0" conaffinity="0"/>
+      <geom name="arm_y" type="box" size="0.003 0.033 0.002"
+            pos="0 0 0" rgba="0.3 0.3 0.3 1" mass="0"
+            contype="0" conaffinity="0"/>
+
+      <site name="rotor0" pos=" 0.0325  0.0325 0.002" size="0.008" rgba="0.8 0.2 0.2 1"/>
+      <site name="rotor1" pos=" 0.0325 -0.0325 0.002" size="0.008" rgba="0.2 0.8 0.2 1"/>
+      <site name="rotor2" pos="-0.0325 -0.0325 0.002" size="0.008" rgba="0.2 0.2 0.8 1"/>
+      <site name="rotor3" pos="-0.0325  0.0325 0.002" size="0.008" rgba="0.8 0.8 0.2 1"/>
+
+      <geom name="prop0" type="cylinder" size="0.023 0.001"
+            pos=" 0.0325  0.0325 0.005" rgba="0.6 0.1 0.1 0.6" mass="0"
+            contype="0" conaffinity="0"/>
+      <geom name="prop1" type="cylinder" size="0.023 0.001"
+            pos=" 0.0325 -0.0325 0.005" rgba="0.1 0.6 0.1 0.6" mass="0"
+            contype="0" conaffinity="0"/>
+      <geom name="prop2" type="cylinder" size="0.023 0.001"
+            pos="-0.0325 -0.0325 0.005" rgba="0.1 0.1 0.6 0.6" mass="0"
+            contype="0" conaffinity="0"/>
+      <geom name="prop3" type="cylinder" size="0.023 0.001"
+            pos="-0.0325  0.0325 0.005" rgba="0.6 0.6 0.1 0.6" mass="0"
+            contype="0" conaffinity="0"/>
+
+      <!-- Forward-facing depth camera.
+           fovy=60 deg (narrower than spike's 90 deg — better depth precision for M3).
+           pos=(0.02, 0, 0): slightly ahead of drone center.
+           xyaxes=(0,-1,0, 0,0,1): camera faces +x (forward in drone frame). -->
+      <camera name="depth_cam"
+              pos="0.02 0 0"
+              xyaxes="0 -1 0 0 0 1"
+              fovy="60"/>
+
+    </body>
+  </worldbody>
+
+  <!-- zfar=5.0 m: render frustum covers the M3 flight envelope.
+       Use mjw.get_depth(rc, cam_id, 5.0, buf) to normalize 0–5 m → 0–1. -->
+  <visual>
+    <map znear="0.01" zfar="5.0"/>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+  </visual>
+
+</mujoco>

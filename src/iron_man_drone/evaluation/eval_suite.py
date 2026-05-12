@@ -148,6 +148,8 @@ def run_eval_suite(
     obs_dim: int,
     seeds: list[int] = EVAL_SEEDS,
     verbose: bool = True,
+    render_depth: bool = False,
+    figures_dir: Path | None = None,
 ) -> SuiteResult:
     """
     Run all (trajectory, condition, seed) combinations via lax.scan.
@@ -170,6 +172,13 @@ def run_eval_suite(
         _build_obs always returns 50-dim obs (M2). For M1 (obs_dim=42), this
         function truncates to the first 42 dims [e_W(30), v(3), R(9)].
         This is correct because the first 42 dims are identical in M1 and M2.
+
+    render_depth / figures_dir:
+        When render_depth=True, env must be a DepthVecEnv with a render_single()
+        method. After the first episode reset of each trajectory, one depth frame is
+        rendered and saved as PNG to figures_dir (default: notes/figures/).
+        This is a strict no-op when render_depth=False — the lax.scan loop and all
+        eval logic are unchanged; no depth-related code executes.
     """
     from iron_man_drone.envs.quadrotor_env import (
         EPISODE_STEPS, _build_obs, MIN_HEIGHT, MAX_HEIGHT_ABOVE_REF, MAX_TILT_RAD,
@@ -252,6 +261,14 @@ def run_eval_suite(
     if verbose:
         print("JIT warmed up.\n")
 
+    # Depth rendering setup (no-op when render_depth=False)
+    if render_depth:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        _fig_dir = figures_dir or (REPO_ROOT / "notes" / "figures")
+        _fig_dir.mkdir(parents=True, exist_ok=True)
+
     results: SuiteResult = {}
 
     for tc in traj_configs:
@@ -260,6 +277,27 @@ def run_eval_suite(
         offset_tag = f"[T/4 offset={tc.offset_steps}]" if tc.offset_steps > 0 else "[t=0]"
         if verbose:
             print(f"── {tc.name} {offset_tag}")
+
+        # Render one depth frame from the initial state of this trajectory (first seed).
+        # The lax.scan loop is unchanged — this render happens at the Python level before
+        # the scan runs. render_depth=False → this block does not execute.
+        if render_depth and hasattr(env, "render_single"):
+            _init_state, _, _ = env._reset_fn(jax.random.PRNGKey(seeds[0]))
+            _init_state = _init_state._replace(
+                traj=tc.traj,
+                step=jnp.int32(tc.offset_steps),
+            )
+            _depth_frame = env.render_single(_init_state)   # (64, 64) float32
+            _png_path = _fig_dir / f"depth_{tc.name}.png"
+            fig, ax = plt.subplots(figsize=(4, 4))
+            ax.imshow(_depth_frame, cmap="viridis", vmin=0, vmax=1)
+            ax.set_title(f"{tc.name}  (0=near, 1={env.DEPTH_MAX_M if hasattr(env, 'DEPTH_MAX_M') else 5.0:.0f}m)")
+            ax.axis("off")
+            fig.tight_layout()
+            fig.savefig(_png_path, dpi=100)
+            plt.close(fig)
+            if verbose:
+                print(f"  [depth] saved {_png_path.name}")
 
         for cond in conditions:
             if verbose:

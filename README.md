@@ -14,7 +14,8 @@ Built on MuJoCo MJX + JAX. Codenamed *Iron Man Drone*.
 |---|---|---|
 | M1 | SimpleFlight recipe on MuJoCo MJX — figure-eight tracking | **DONE** |
 | M2 | Fault tolerance via RMA two-phase training + MAVEN-style DR | **DONE** |
-| M3 | Visual obstacle avoidance | Pending M2 |
+| M2.5 | Depth rendering + obstacle infrastructure via MJWarp | **DONE** |
+| M3 | Visual obstacle avoidance | **Next** |
 | M4 | 3DGS-SLAM mapping + landmark return | Pending M3 |
 | M5 | GRaD-Nav++ — natural language flight commands | Pending M4 |
 
@@ -73,6 +74,48 @@ The encoder adds effectively zero overhead on nominal performance (Phase 2 withi
 **Offline encoder:** best val MSE 0.0156 (η-channel mean 0.011, m_scale 0.076 — mass is harder to predict but doesn't visibly hurt closed-loop performance). 
 
 **Encoder startup caveat:** The ring buffer initializes to zeros at episode start. During the first H=50 steps the encoder sees a zero-padded history and produces unreliable ê_t estimates. On figure_eight_normal the policy recovers quickly; on figure_eight_fast + fault the reduced thrust margin amplifies the startup perturbation to crashes. This is documented in `lessons.md` (L5) with fix options and will be addressed before M3.
+
+---
+
+## M2.5 — Depth rendering + obstacle infrastructure
+
+M2.5 is not a milestone in the original plan. It was added after the M2 Phase 2 eval to avoid a mid-training simulator migration at M3. The choice was between porting the whole stack to Genesis (a different simulator) or bolting MJWarp's GPU depth renderer onto the existing MJX stack. I evaluated both options honestly.
+
+**Why MJWarp over Genesis:** A spike test (six gates: install, JAX compatibility, parallel render at N=1024, throughput, no Vulkan on WSL2, dynamics parity) produced all-PASS results within a day. Genesis had integration complexity that wasn't worth the churn. MJWarp is CUDA-native — no Vulkan, no EGL, no WSL2 driver issues. It renders depth frames directly from MuJoCo MJCF models, which means the physics and render environments stay in sync by construction.
+
+**Architecture: Option A** — MJX for physics (unchanged), MJWarp for rendering only. The two communicate via a state-transfer step at render time (drone qpos + obstacle mocap_pos → MJWarp → depth image). Measured overhead: 0.6% of total render time. This is effectively free.
+
+### What was built
+
+- **`crazyflie_depth.xml`** — MJCF with 16 kinematic mocap slots for obstacles and a forward-facing depth camera (64×64, fovy=60°, max 5 m).
+- **`obstacle_randomization.py`** — obstacle layout sampling (L∞ SDF, rejection sampling for spawn and inter-obstacle exclusion) and `min_distance_to_obstacle` for M3.
+- **`quadrotor_env_depth.py`** — `DepthVecEnv`: MJX physics + MJWarp rendering in one class. `batch_render()` does the full MJX→MJWarp state transfer and returns `(N, 64, 64)` float32 depth frames.
+- **`eval_suite.py` update** — `render_depth=True` parameter renders and saves one depth frame per trajectory during eval.
+- **`train_m2.py` update** — `--env depth` flag switches training to `DepthVecEnv`.
+
+The depth tensor and obstacle privileged state are **computed but not consumed by the policy**. M3 picks up from this infrastructure without a sim migration mid-training.
+
+### Throughput
+
+| N worlds | render latency | throughput | state-transfer% |
+|---|---|---|---|
+| 1 | 18.7 ms | 0.1k steps/s | 0.7% |
+| 64 | 19.1 ms | 3.3k steps/s | 0.7% |
+| 256 | 20.1 ms | 12.7k steps/s | 0.6% |
+| 1024 | 30.6 ms | **33.5k steps/s** | 0.6% |
+
+SC-4 gate: ≥ 25k env-steps/sec at N=1024 — **PASS**. State-transfer overhead ≤ 20% — **PASS** (0.6%).
+
+### Regression results
+
+The 16 mocap obstacle bodies in `crazyflie_depth.xml` have zero impact on drone dynamics. Both M1.3 and M2 Phase 1 evaluated on `DepthVecEnv` reproduce their canonical baselines exactly:
+
+| Policy | Env | figure_eight_normal MED | Δ vs baseline |
+|---|---|---|---|
+| M1.3 | VecEnv (canonical) | 0.0402 m | — |
+| M1.3 | DepthVecEnv (SC-2) | 0.0402 m | 0.0000 m |
+| M2 Phase 1 | VecEnv (canonical) | 0.0574 m | — |
+| M2 Phase 1 | DepthVecEnv (SC-1) | 0.0574 m | 0.0000 m |
 
 ---
 
@@ -215,22 +258,25 @@ python scripts/train_m2.py --config experiments/m2_phase1_baseline/config.yaml -
 src/iron_man_drone/
   envs/
     crazyflie.xml             MuJoCo MJCF — Crazyflie 2.1 dynamics, forces applied programmatically
+    crazyflie_depth.xml       M2.5 MJCF — adds 16 mocap obstacle slots + depth camera (64×64)
     quadrotor_env.py          MJX env: vmap over 2048 envs, M2 DR, priv_state
+    quadrotor_env_depth.py    M2.5 DepthVecEnv: MJX physics + MJWarp depth rendering
     trajectories.py           Lazy trajectory system: quintic poly, zigzag, figure-eight, pentagram
   control/
     ctbr_controller.py        CTBR → rotor speeds (rate PD + X-config mixer + motor lag)
   policy/
     networks.py               Flax Actor (50→4) + Critic (51→1), 3×256 ELU+LayerNorm
     ppo.py                    PPO trainer: lax.scan rollout, separate actor/critic TrainStates
+    encoder.py                Phase 2 causal encoder ϕ (AdaptationEncoder, 2300→256→128→8→tanh)
   utils/
     domain_randomization.py   M2 DR parameter sampling
+    obstacle_randomization.py M2.5 obstacle layout: L∞ SDF, rejection sampling, 16-slot configs
+  evaluation/
+    eval_suite.py             Unified eval module — T/4-corrected, crash-only, GPU MJX lax.scan
 experiments/
   m1_3_polynomial_fix/        M1.3 final run (config + eval results; checkpoints gitignored)
   m2_phase1_baseline/         M2 Phase 1 run
-  policy/
-    encoder.py                Phase 2 causal encoder ϕ (AdaptationEncoder, 2300→256→128→8→tanh)
-  evaluation/
-    eval_suite.py             Unified eval module — T/4-corrected, crash-only, GPU MJX lax.scan
+  phase2_encoder/             M2 Phase 2 encoder checkpoint
 notes/
   M1_hypothesis.md            Required gating artifact before any M1 training
   M1_3_eval_methodology.md    T/4 phase offset discovery and justification
@@ -238,16 +284,23 @@ notes/
   M2_spec.md                  M2 design spec (RMA architecture, DR ranges, success criteria)
   M2_results.md               M2 final results — Phase 1 + Phase 2 side-by-side
   M2_phase2_hypothesis.md     Phase 2 hypothesis + actuals comparison
-  lessons.md                  L1–L7: failure post-mortems and key findings
+  M2_5_results.md             M2.5 canonical results — depth render + obstacle infra, all SCs
+  M2_5_benchmark_results.md   MJX→MJWarp state-transfer benchmark table (Task 4)
+  lessons.md                  L1–L9: failure post-mortems and key findings
 scripts/
   train_m1.py                 M1 training entry point
-  train_m2.py                 M2 Phase 1 training entry point
+  train_m2.py                 M2/M2.5 training entry point (--env depth for DepthVecEnv)
   eval_m1_suite.py            M1 canonical eval via eval_suite.py (GPU MJX)
   eval_m1_full.py             Legacy M1 eval (CPU mujoco; superseded by eval_m1_suite.py)
   eval_m2_full.py             M2 Phase 1 full eval (T/4-corrected)
   collect_phase2_data.py      Phase 2 data collection (frozen actor rollouts)
   train_phase2_encoder.py     Phase 2 encoder supervised training
   eval_m2_phase2.py           Phase 2 closed-loop eval (encoder deployed)
+  eval_sc1_depth_m2.py        SC-1: M2 actor + DepthVecEnv regression gate
+  eval_sc2_depth_m1.py        SC-2: M1.3 actor + DepthVecEnv regression gate
+  smoke_test_depth.py         SC-3: depth render shape/range/obstacle-visibility check
+  smoke_test_obstacles.py     SC-5: obstacle geometry + 1000-step episode stability
+  benchmark_mjwarp_transfer.py Task 4 MJX→MJWarp state-transfer overhead benchmark
 ```
 
 ---
