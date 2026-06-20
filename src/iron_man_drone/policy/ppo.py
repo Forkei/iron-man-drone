@@ -27,7 +27,7 @@ from .networks import Actor, Critic
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-@dataclass
+@dataclass(frozen=True)
 class PPOConfig:
     # Hyperparameters from SimpleFlight Table VI
     gamma: float = 0.99

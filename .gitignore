@@ -59,3 +59,9 @@ mlruns/
 experiments/phase2_data/
 experiments/phase2_encoder/
 *.npz
+
+# M3 run binaries (checkpoints + rendered clips) — too large for git
+experiments/*/checkpoints/
+experiments/*/clips/
+*.mp4
+*.gif

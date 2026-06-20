@@ -107,6 +107,44 @@
 
 ---
 
+## L10 — When a test fails, investigate the test before adjusting the threshold
+
+**Observed (Gate 4, 2026-05-14/15):** Gate 4 failed — M2 Phase 1 policy tracked at 0.17 m XY MED vs
+threshold 0.075 m. Initial framing: "threshold was wrong; M2 eval's 0.037 m was a spec target not a
+measured result; raise threshold to 0.20 m to match actual policy performance." This framing was
+accepted and the gate was declared passing. Investigation the next day found three real bugs:
+
+1. **Wrong checkpoint.** Gate 4 was loading `m2_phase1_baseline_1778539544`, an aborted 200-epoch run
+   with inline MED ≈ 0.19 m. The canonical M2 Phase 1 checkpoint (`1778244202`, 15k epochs,
+   T/4-corrected MED = 0.057 m) was never tested.
+2. **Wrong measurement window.** WARMUP=550 was added to skip "acquisition phase," but M2 eval has no
+   warmup skip — it measures all 1000 steps. The acquisition phase exists only because the checkpoint
+   was wrong; a converged policy doesn't need 550 steps to settle.
+3. **Trajectory created too short.** `make_figure_eight_trajectory(DT, EPISODE_STEPS, ...)` sets
+   `total_time = 10.0 s`. With OFFSET_STEPS=138 and TOTAL=1000, the sim reaches step 1138 = 11.38 s,
+   past `total_time`. `eval_trajectory_position` silently clamps to the endpoint — no error raised.
+   M2 eval always creates the trajectory with headroom (total = EPISODE_STEPS + off + LOOKAHEAD + 5).
+
+The threshold (0.075 m = 0.057 m × 1.31) was correct all along.
+
+**The pattern:** A result that doesn't match expectations. The proposed resolution adjusts the
+expectation rather than investigates the result. This is the wrong first move.
+
+**The same pattern appeared at least twice before this project:**
+- M2 "2.5× regression": apparent 0.037→0.105 m gap; investigation revealed it was entirely a
+  methodology artifact (t=0 vs T/4). The gap on a correct basis was 1.2×.
+- Encoder MSE "prediction of 0.35": user wrote 0.35 expecting a large number; actual result was
+  0.016, well within spec. No adjustment to the gate — the gate was right.
+
+**Rule:** When a test fails and the instinct is "the test is wrong," explicitly enumerate what
+else could explain the result before changing the threshold. Ask:
+  (a) Is the correct input (checkpoint, data, configuration) being tested?
+  (b) Is the measurement methodology consistent with what the reference number used?
+  (c) Does the result make physical sense?
+Only after answering all three should the threshold be reconsidered.
+
+---
+
 ## L9 — MJX throughput: GPU occupancy and warm-GPU session effects
 
 **Observed (M2.5 Task 1 gate check):** crazyflie.xml (2 bodies) measured 79–91k steps/sec at N=1024 in a cold Python process. crazyflie_depth.xml (18 bodies) measured 523k steps/sec in the same cold session. The original spike reported 748.9k for the old depth XML (3 bodies) — appearing to contradict the GPU occupancy explanation.

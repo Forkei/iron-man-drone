@@ -1,0 +1,100 @@
+# M3 Run 1 — Frozen Hyperparameters
+# Joint fault+obstacle training from scratch, 4-mode procedural scene generator.
+# Run name: m3_run1_joint_4mode_3ms_<timestamp>  (timestamp filled at launch)
+# Hypothesis doc: notes/M3_hypothesis.md
+
+run:
+  name_prefix: m3_run1_joint_4mode_3ms
+  seed: 42
+  total_env_steps: 500_000_000
+  num_envs: 1024
+  horizon: 32                      # 32,768 env-steps per epoch
+
+# ── PPO ────────────────────────────────────────────────────────────────────────
+ppo:
+  actor_lr: 3.0e-4
+  critic_lr: 1.0e-4
+  encoder_lr: 1.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coeff: 1.0e-3
+  max_grad_norm: 0.5
+  ppo_epochs: 5
+  num_minibatches: 8
+  critic_updates: 16               # critic gets more gradient steps per epoch
+
+# ── Architecture ───────────────────────────────────────────────────────────────
+architecture:
+  actor_obs_dim: 66                # 42 base + 8 encoder latent + 16 depth bins
+  critic_obs_dim: 72               # 66 + 1 step-k + 5 obstacle distances
+  encoder_dim: 8                   # z_fault latent dimension
+  depth_n_bins: 16                 # 16 horizontal sectors, min-pooled
+  encoder_history: 50              # H=50 steps of (obs_base, action) history
+  hidden_dim: 256
+  activation: elu
+
+# ── Reward weights ─────────────────────────────────────────────────────────────
+reward:
+  w_track: 2.0
+  w_smooth: 0.1
+  w_survive: 0.01
+  w_obstacle: 0.5
+  w_crash: 10.0
+  d_safe: 0.5                      # proximity penalty onset (meters)
+  d_crash: 0.15                    # crash threshold (meters)
+
+# ── Domain randomization ───────────────────────────────────────────────────────
+domain_randomization:
+  fault_prob: 0.7                  # fraction of episodes with rotor fault
+  eta_min: 0.5                     # min rotor efficiency (paper uses 0.3 for hard)
+  eta_max: 1.0
+  mass_lo: 0.8                     # mass scale lower bound
+  mass_hi: 1.2                     # mass scale upper bound
+  kf_lo: 0.7                       # thrust coefficient scale lower bound
+  kf_hi: 1.3                       # thrust coefficient scale upper bound
+
+# ── Scene generator ────────────────────────────────────────────────────────────
+scene:
+  training_modes: [forest, urban, random, slalom]
+  training_weights: [0.25, 0.25, 0.25, 0.25]
+  holdout_modes: [hallway]
+  pillar_half_extents: [0.05, 0.05, 0.5]    # matches crazyflie_depth.xml geom
+  arena_xy: 4.0                              # ±4 m arena
+
+# ── Curriculum ─────────────────────────────────────────────────────────────────
+curriculum:
+  sparse_until_steps: 10_000_000    # density_mult=0.5 below this
+  full_until_steps: 50_000_000      # density_mult ramps 0.5→1.0 up to here
+  stress_prob: 0.2                  # fraction of episodes at density_mult=1.5
+
+# ── Trajectory ─────────────────────────────────────────────────────────────────
+trajectory:
+  type: figure_eight_normal
+  max_speed_ms: 3.0
+  episode_steps: 500
+
+# ── Logging and checkpointing ──────────────────────────────────────────────────
+logging:
+  log_every_epochs: 100            # ~3.3M env-steps
+  eval_every_epochs_early: 61      # ~2M env-steps (first 100M steps)
+  eval_every_epochs_late: 305      # ~10M env-steps (after 100M steps)
+  eval_switch_epoch: 3051          # epoch index where early→late eval switches
+  ckpt_every_epochs: 305           # ~10M env-steps
+
+# ── Gates ──────────────────────────────────────────────────────────────────────
+gates:
+  h1_check_epoch: 916              # 30M env-steps — H1 abort gate
+  h1_crash_threshold: 0.70         # abort if crash_rate > this AND not trending down
+  h1_trend_window_epochs: 150      # epochs over which to compute crash_rate trend
+  one_hour_epoch: 3576             # ~117M env-steps — pause for user confirmation
+  throughput_min_fps: 20000        # validation gate 5: minimum env-steps/sec
+
+# ── Dynamics (reference — do not change without CLAUDE.md update) ──────────────
+dynamics:
+  mass_kg: 0.0321
+  kf: 2.350347298350041e-08
+  km: 7.24e-10
+  motor_tau_s: 0.025
+  arm_length_m: 0.046
+  max_rotor_speed_rads: 2315

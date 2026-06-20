@@ -103,7 +103,15 @@ def _solve_quintic_coeffs(
 # ---------------------------------------------------------------------------
 
 def eval_trajectory_position(traj: Trajectory, t: jnp.ndarray) -> jnp.ndarray:
-    """Return world-frame (x, y, z) position at time t (seconds). Shape: (3,)."""
+    """Return world-frame (x, y, z) position at time t (seconds). Shape: (3,).
+
+    WARNING — silent clamp: t is clipped to [0, traj.total_time] with no error
+    or warning.  Querying past trajectory end returns the endpoint position, not
+    garbage — but it is silently wrong.  Callers must ensure the trajectory was
+    created with sufficient total_steps to cover every query time.  The standard
+    formula (matching eval_m2_full.py) is:
+        traj_total_steps = EPISODE_STEPS + offset_steps + lookahead_buf + 10
+    """
     t = jnp.clip(jnp.asarray(t, dtype=jnp.float32), 0.0, traj.total_time)
 
     def _seg(cum_times, t):

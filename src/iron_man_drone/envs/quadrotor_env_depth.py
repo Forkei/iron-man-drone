@@ -286,20 +286,20 @@ class DepthVecEnv:
         mujoco.mj_forward(self.mj_model, mj_data)
 
         self._mjw_model = mjw.put_model(self.mj_model)
+        # njmax=0: no constraint buffers — render path only needs kinematics
         self._mjw_data  = mjw.put_data(
-            self.mj_model, mj_data, nworld=self.num_envs, njmax=200
+            self.mj_model, mj_data, nworld=self.num_envs, njmax=0
         )
+        ncam = self.mj_model.ncam
         self._rc = mjw.create_render_context(
             self.mj_model,
             nworld=self.num_envs,
             cam_res=(DEPTH_RES, DEPTH_RES),
-            render_depth=True,
-            render_rgb=False,
+            render_depth=[True] * ncam,
+            render_rgb=[False] * ncam,
             use_shadows=False,
         )
-        self._depth_buf = wp.zeros(
-            (self.num_envs, DEPTH_RES, DEPTH_RES), dtype=wp.float32, device="cuda:0"
-        )
+        # depth_buf removed: mujoco_warp 3.5.0 stores depth in rc.depth_data directly
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -337,7 +337,7 @@ class DepthVecEnv:
         Render depth frames for all envs.
 
         State transfer (Option A): MJX qpos + obstacle_positions → MJWarp, then
-        mjw.forward computes kinematics, mjw.render produces depth images.
+        mjw.kinematics+camlight compute body/camera poses, mjw.render produces depth images.
         Obstacle positions are written from EnvState directly (bypassing MJX mocap
         propagation), so render positions exactly match the episode layout.
 
@@ -360,17 +360,22 @@ class DepthVecEnv:
             wp.from_numpy(mocap_np, dtype=wp.vec3f, device="cuda:0")
         )
 
-        # ── Forward kinematics: body positions → geom positions ──────────────
-        mjw.forward(self._mjw_model, self._mjw_data)
+        # kinematics only: body/camera poses from qpos, no constraint solving
+        mjw.kinematics(self._mjw_model, self._mjw_data)
+        mjw.camlight(self._mjw_model, self._mjw_data)
 
         # ── Render ────────────────────────────────────────────────────────────
         mjw.render(self._mjw_model, self._mjw_data, self._rc)
-        mjw.get_depth(self._rc, self.cam_id, DEPTH_MAX_M, self._depth_buf)
         wp.synchronize()
 
-        # Copy to JAX via numpy (avoids stale-buffer aliasing on the next render call)
-        depth_np = self._depth_buf.numpy()                  # (N, 64, 64) float32 CPU
-        return jnp.array(depth_np)                          # (N, 64, 64) float32 GPU
+        # mujoco_warp 3.5.0: depth stored in rc.depth_data (nworld, H*W), 0.0=no hit
+        depth_raw = self._rc.depth_data.numpy()             # (N, H*W) float32, meters
+        depth_norm = np.where(
+            depth_raw == 0.0, 1.0,
+            np.clip(depth_raw / DEPTH_MAX_M, 0.0, 1.0)
+        )
+        depth_np = depth_norm.reshape(self.num_envs, DEPTH_RES, DEPTH_RES)  # (N,64,64)
+        return jnp.array(depth_np)
 
     # ── eval_suite compatibility ───────────────────────────────────────────────
 
