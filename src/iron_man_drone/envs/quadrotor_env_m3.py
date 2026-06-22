@@ -79,7 +79,12 @@ def _min_dist_jax(
 D_SAFE   = 0.5    # m — proximity penalty onset
 D_CRASH  = 0.15   # m — collision termination threshold
 
-W_TRACK    = 2.0
+# M3 v2 (2026-06-22): W_TRACK 2.0 -> 6.0. Diagnostics showed the v1 policy tracked
+# 5x looser than M2 on the identical figure-eight (0.287m vs 0.057m) despite identical
+# reward SHAPE/encoder/control — the obstacle-avoidance objective (esp. the -10 crash
+# penalty) bred a conservative, globally-loose policy. Up-weighting tracking tests whether
+# rebalancing recovers precision without breaking avoidance. See notes/M3_v2_hypothesis.md.
+W_TRACK    = 6.0    # v1: 2.0
 W_SMOOTH   = 0.1
 W_SURVIVE  = 0.01
 W_OBSTACLE = 0.5
