@@ -79,16 +79,20 @@ def _min_dist_jax(
 D_SAFE   = 0.5    # m — proximity penalty onset
 D_CRASH  = 0.15   # m — collision termination threshold
 
-# M3 v2 (2026-06-22): W_TRACK 2.0 -> 6.0. Diagnostics showed the v1 policy tracked
+# Reward weights — overridable via env vars so reward-lever sweeps need no code edits:
+#   W_TRACK=6 W_CRASH=4 python scripts/train_m3.py --run_name ...
+# M3 v2 (2026-06-22): default W_TRACK 2.0 -> 6.0. Diagnostics showed the v1 policy tracked
 # 5x looser than M2 on the identical figure-eight (0.287m vs 0.057m) despite identical
 # reward SHAPE/encoder/control — the obstacle-avoidance objective (esp. the -10 crash
-# penalty) bred a conservative, globally-loose policy. Up-weighting tracking tests whether
-# rebalancing recovers precision without breaking avoidance. See notes/M3_v2_hypothesis.md.
-W_TRACK    = 6.0    # v1: 2.0
-W_SMOOTH   = 0.1
-W_SURVIVE  = 0.01
-W_OBSTACLE = 0.5
-W_CRASH    = 10.0
+# penalty) bred a conservative, globally-loose policy. See notes/M3_v2_hypothesis.md.
+def _wenv(name: str, default: float) -> float:
+    return float(os.environ.get(name, default))
+
+W_TRACK    = _wenv("W_TRACK",    6.0)   # v1 default was 2.0
+W_SMOOTH   = _wenv("W_SMOOTH",   0.1)
+W_SURVIVE  = _wenv("W_SURVIVE",  0.01)
+W_OBSTACLE = _wenv("W_OBSTACLE", 0.5)
+W_CRASH    = _wenv("W_CRASH",    10.0)
 
 # Max speed for M3 trajectory generator (spec: 3 m/s training cap)
 M3_MAX_VEL = 3.0    # m/s at waypoints

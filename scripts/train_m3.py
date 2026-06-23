@@ -276,7 +276,7 @@ def train(cfg: M3Config, run_name: str, exp_dir: Path):
     exp_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Hypothesis gate ───────────────────────────────────────────────────────
-    hyp_path = ROOT / "notes" / "M3_hypothesis.md"
+    hyp_path = ROOT / "notes" / "M3_v2_hypothesis.md"
     if not hyp_path.exists():
         print("BLOCKED: notes/M3_hypothesis.md not found. Write hypothesis doc first.")
         sys.exit(1)
@@ -416,8 +416,11 @@ def train(cfg: M3Config, run_name: str, exp_dir: Path):
     if log_file_mode == "w":
         log_writer.writeheader()
 
-    # WSL-native filesystem — avoids 30-40 min fsync stalls on /mnt/c writes.
-    ckpt_dir = Path("/home/forke/m3_checkpoints") / run_name
+    # Checkpoint dir. Default is the local-WSL native path (avoids 30-40 min fsync
+    # stalls on /mnt/c writes); override with M3_CKPT_DIR on cloud boxes where
+    # /home/forke doesn't exist (e.g. M3_CKPT_DIR=$PWD/ckpts).
+    ckpt_root = Path(os.environ.get("M3_CKPT_DIR", "/home/forke/m3_checkpoints"))
+    ckpt_dir = ckpt_root / run_name
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Resume from latest checkpoint if available ────────────────────────────

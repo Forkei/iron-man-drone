@@ -28,7 +28,10 @@ from train_m3 import load_checkpoint
 NOMINAL = jnp.array([1., 1., 1., 1., 1., 0., 0., 0.])
 
 def main():
-    ck = "/home/forke/m3_checkpoints/m3_run1/final"
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", default="/home/forke/m3_checkpoints/m3_run1/final")
+    ck = ap.parse_args().ckpt
     actor, critic, encoder, a_s, c_s, e_s = build_states()
     a_s, c_s, e_s, epoch = load_checkpoint(Path(ck), a_s, c_s, e_s)
     print(f"Loaded epoch {epoch}", flush=True)
